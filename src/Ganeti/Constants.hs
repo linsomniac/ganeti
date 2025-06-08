@@ -899,6 +899,9 @@ dtExt = Types.diskTemplateToRaw DTExt
 dtGluster :: String
 dtGluster = Types.diskTemplateToRaw DTGluster
 
+dtZfs :: String
+dtZfs = Types.diskTemplateToRaw DTZfs
+
 dtMixed :: String
 dtMixed = "mixed"
 

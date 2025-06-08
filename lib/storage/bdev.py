@@ -48,6 +48,7 @@ from ganeti.storage import base
 from ganeti.storage import drbd
 from ganeti.storage.filestorage import FileStorage
 from ganeti.storage.gluster import GlusterStorage
+from ganeti.storage.zfs import ZfsBlockDevice
 from ganeti.storage.extstorage import ExtStorageDevice
 
 
@@ -1401,6 +1402,7 @@ DEV_MAP = {
   constants.DT_FILE: FileStorage,
   constants.DT_SHARED_FILE: FileStorage,
   constants.DT_GLUSTER: GlusterStorage,
+  constants.DT_ZFS: ZfsBlockDevice,
 }
 """Map disk types to disk type classes.
 
