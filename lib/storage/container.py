@@ -474,6 +474,104 @@ class LvmVgStorage(_LvmBase):
     return _LvmBase.Execute(self, name, op)
 
 
+class ZfsPoolStorage(_Base):
+  """ZFS storage pool unit.
+
+  """
+  # Make sure to update constants.VALID_STORAGE_FIELDS when changing field
+  # definitions.
+  LIST_FIELDS = [
+    (constants.SF_NAME, ["pool"], None),
+    (constants.SF_SIZE, ["size"], _ParseSize),
+    (constants.SF_FREE, ["free"], _ParseSize),
+    (constants.SF_USED, ["alloc"], _ParseSize),
+    (constants.SF_ALLOCATABLE, [], True),
+    ]
+
+  def List(self, name, fields):
+    """Returns a list of ZFS pools within the storage unit.
+
+    See L{_Base.List}.
+
+    """
+    command = ["zpool", "list", "-H", "-o", "name,size,alloc,free"]
+    if name is not None:
+      command.append(name)
+
+    result = utils.RunCmd(command)
+    if result.failed:
+      # If specific pool doesn't exist, return empty list
+      if name is not None:
+        return []
+      else:
+        raise errors.StorageError("ZFS list command failed: %s" %
+                                  result.stderr)
+
+    data = []
+    for line in result.stdout.splitlines():
+      if not line.strip():
+        continue
+      
+      parts = line.strip().split('\t')
+      if len(parts) < 4:
+        logging.warning("Invalid zpool list output: %s", line)
+        continue
+
+      pool_name, size_str, alloc_str, free_str = parts[:4]
+
+      # Convert from human readable format (e.g., "10G") to bytes
+      try:
+        size_bytes = utils.ParseUnit(size_str)
+        alloc_bytes = utils.ParseUnit(alloc_str)
+        free_bytes = utils.ParseUnit(free_str)
+      except (ValueError, errors.UnitParseError):
+        logging.warning("Cannot parse ZFS pool sizes for %s", pool_name)
+        continue
+
+      # Convert to MiB as expected by storage framework
+      size_mib = int(size_bytes / (1024 * 1024))
+      alloc_mib = int(alloc_bytes / (1024 * 1024))
+      free_mib = int(free_bytes / (1024 * 1024))
+
+      entry = {
+        "pool": pool_name,
+        "size": size_mib,
+        "alloc": alloc_mib,
+        "free": free_mib,
+      }
+
+      row = []
+      for field_name, field_keys, converter in self.LIST_FIELDS:
+        if field_name in fields:
+          if converter is None:
+            value = entry[field_keys[0]]
+          elif len(field_keys) == 1:
+            value = converter(entry[field_keys[0]])
+          else:
+            value = converter(*[entry[key] for key in field_keys])
+          row.append(value)
+
+      data.append(row)
+
+    return data
+
+  def Execute(self, name, op):
+    """Executes an operation on a ZFS pool.
+
+    See L{_Base.Execute}.
+
+    """
+    if op == constants.SO_FIX_CONSISTENCY:
+      # For ZFS, we can try a scrub operation
+      result = utils.RunCmd(["zpool", "scrub", name])
+      if result.failed:
+        raise errors.StorageError("ZFS scrub failed for pool '%s': %s" %
+                                  (name, result.stderr))
+      return True
+
+    return super(ZfsPoolStorage, self).Execute(name, op)
+
+
 # Lookup table for storage types
 _STORAGE_TYPES = {
   constants.ST_FILE: FileStorage,
@@ -481,6 +579,7 @@ _STORAGE_TYPES = {
   constants.ST_LVM_VG: LvmVgStorage,
   constants.ST_SHARED_FILE: FileStorage,
   constants.ST_GLUSTER: FileStorage,
+  constants.ST_ZFS: ZfsPoolStorage,
   }
 
 

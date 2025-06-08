@@ -39,6 +39,7 @@ from ganeti import locking
 from ganeti import hypervisor
 from ganeti.masterd import iallocator
 from ganeti import utils
+from ganeti.utils import process
 from ganeti.cmdlib.base import LogicalUnit, Tasklet
 from ganeti.cmdlib.common import ExpandInstanceUuidAndName, \
   CheckIAllocatorOrNode, ExpandNodeUuidAndName
@@ -635,6 +636,153 @@ class TLMigrateInstance(Tasklet):
         self.cfg.GetNodeName(uuid) for uuid in node_uuids))
     return node_uuids
 
+  def _ZfsReplicateDisks(self):
+    """Handle ZFS replication for live migration.
+
+    This method performs the ZFS send/receive operations needed for 
+    live migration with minimal downtime:
+    1. Take initial snapshot on source
+    2. Send initial snapshot to target (while VM runs)
+    3. Take intermediate snapshot and send incremental (while VM runs)
+    4. Pause VM, take final snapshot and send final incremental
+    5. Resume VM on target
+    """
+    disks = self.cfg.GetInstanceDisks(self.instance.uuid)
+    zfs_disks = [d for d in disks if d.dev_type == constants.DT_ZFS]
+    
+    if not zfs_disks:
+      return
+
+    self.feedback_fn("* preparing ZFS replication for %d disks" % len(zfs_disks))
+    
+    # Import the ZFS module
+    from ganeti.storage.zfs import ZfsBlockDevice
+    
+    # Track snapshots for cleanup
+    snapshots = []
+    
+    try:
+      for disk in zfs_disks:
+        pool_name, dataset_name = disk.logical_id
+        source_dataset = "%s/%s" % (pool_name, dataset_name) 
+        target_dataset = source_dataset  # Same dataset name on target
+        
+        # Create source ZFS device object to handle operations
+        zfs_dev = ZfsBlockDevice(disk.logical_id, disk.children, disk.size, 
+                                disk.params, disk.dynamic_params)
+        
+        self.feedback_fn("* replicating ZFS dataset %s" % source_dataset)
+        
+        # Step 1: Take initial snapshot
+        import time
+        initial_snap = "ganeti-migration-%d-initial" % int(time.time())
+        self.feedback_fn("  - creating initial snapshot %s" % initial_snap)
+        
+        result = utils.RunCmd(["zfs", "snapshot", "%s@%s" % (source_dataset, initial_snap)])
+        if result.failed:
+          raise errors.OpExecError("Failed to create initial ZFS snapshot: %s" % result.stderr)
+        snapshots.append((source_dataset, initial_snap))
+        
+        # Step 2: Send initial snapshot to target
+        self.feedback_fn("  - sending initial snapshot to target (this may take time)")
+        target_host = self.cfg.GetNodeName(self.target_node_uuid)
+        
+        # Create the target dataset first
+        target_ip = self.nodes_ip[self.target_node_uuid]
+        create_cmd = ["ssh", target_ip, "zfs", "create", "-V", str(int(disk.size * 1024 * 1024)), target_dataset]
+        result = utils.RunCmd(create_cmd)
+        if result.failed and "dataset already exists" not in result.stderr:
+          raise errors.OpExecError("Failed to create target ZFS dataset: %s" % result.stderr)
+        
+        # Send the initial snapshot
+        send_cmd = ["zfs", "send", "%s@%s" % (source_dataset, initial_snap)]
+        receive_cmd = ["ssh", target_ip, "zfs", "receive", "-F", target_dataset]
+        
+        # Use pipeline: zfs send | ssh target zfs receive
+        send_proc = process.Popen(send_cmd, stdout=process.PIPE)
+        receive_proc = process.Popen(receive_cmd, stdin=send_proc.stdout)
+        send_proc.stdout.close()
+        receive_proc.wait()
+        send_proc.wait()
+        
+        if send_proc.returncode != 0 or receive_proc.returncode != 0:
+          raise errors.OpExecError("Failed initial ZFS replication for %s" % source_dataset)
+        
+        # Step 3: Take intermediate snapshot and send incremental  
+        intermediate_snap = "ganeti-migration-%d-incremental" % int(time.time())
+        self.feedback_fn("  - creating incremental snapshot %s" % intermediate_snap)
+        
+        result = utils.RunCmd(["zfs", "snapshot", "%s@%s" % (source_dataset, intermediate_snap)])
+        if result.failed:
+          raise errors.OpExecError("Failed to create incremental ZFS snapshot: %s" % result.stderr)
+        snapshots.append((source_dataset, intermediate_snap))
+        
+        # Send incremental snapshot
+        self.feedback_fn("  - sending incremental changes")
+        send_cmd = ["zfs", "send", "-i", "%s@%s" % (source_dataset, initial_snap),
+                   "%s@%s" % (source_dataset, intermediate_snap)]
+        receive_cmd = ["ssh", target_ip, "zfs", "receive", target_dataset]
+        
+        send_proc = process.Popen(send_cmd, stdout=process.PIPE)
+        receive_proc = process.Popen(receive_cmd, stdin=send_proc.stdout)
+        send_proc.stdout.close()
+        receive_proc.wait()
+        send_proc.wait()
+        
+        if send_proc.returncode != 0 or receive_proc.returncode != 0:
+          raise errors.OpExecError("Failed incremental ZFS replication for %s" % source_dataset)
+        
+      self.feedback_fn("* ZFS replication preparation complete")
+      
+      # Store snapshot info for final sync during instance pause
+      self.zfs_snapshots = snapshots
+      
+    except Exception as err:
+      # Cleanup snapshots on error
+      self.feedback_fn("* cleaning up ZFS snapshots due to error")
+      for dataset, snap in snapshots:
+        utils.RunCmd(["zfs", "destroy", "%s@%s" % (dataset, snap)])
+      raise
+
+  def _ZfsFinalSync(self):
+    """Perform final ZFS synchronization during instance pause.
+    
+    This is called when the instance is paused to do the final
+    incremental sync with minimal downtime.
+    """
+    if not hasattr(self, 'zfs_snapshots'):
+      return
+      
+    self.feedback_fn("* performing final ZFS synchronization")
+    target_ip = self.nodes_ip[self.target_node_uuid]
+    
+    for dataset, intermediate_snap in self.zfs_snapshots:
+      # Take final snapshot
+      import time
+      final_snap = "ganeti-migration-%d-final" % int(time.time())
+      
+      result = utils.RunCmd(["zfs", "snapshot", "%s@%s" % (dataset, final_snap)])
+      if result.failed:
+        logging.error("Failed to create final ZFS snapshot: %s", result.stderr)
+        continue
+        
+      # Send final incremental
+      send_cmd = ["zfs", "send", "-i", "%s@%s" % (dataset, intermediate_snap),
+                 "%s@%s" % (dataset, final_snap)]
+      receive_cmd = ["ssh", target_ip, "zfs", "receive", dataset]
+      
+      send_proc = process.Popen(send_cmd, stdout=process.PIPE)
+      receive_proc = process.Popen(receive_cmd, stdin=send_proc.stdout)
+      send_proc.stdout.close()
+      receive_proc.wait()
+      send_proc.wait()
+      
+      if send_proc.returncode != 0 or receive_proc.returncode != 0:
+        logging.error("Failed final ZFS sync for %s", dataset)
+        
+      # Cleanup old snapshots, keep final one
+      utils.RunCmd(["zfs", "destroy", "%s@%s" % (dataset, intermediate_snap)])
+
   def _ExecCleanup(self):
     """Try to cleanup after a failed migration.
 
@@ -742,9 +890,9 @@ class TLMigrateInstance(Tasklet):
 
     self._CloseInstanceDisks(self.target_node_uuid)
 
-    unmap_types = (constants.DT_RBD, constants.DT_EXT)
+    unmap_types = (constants.DT_RBD, constants.DT_EXT, constants.DT_ZFS)
     if utils.AnyDiskOfType(disks, unmap_types):
-      # If the instance's disk template is `rbd' or `ext' and there was an
+      # If the instance's disk template is `rbd', `ext', or `zfs' and there was an
       # unsuccessful migration, unmap the device from the target node.
       unmap_disks = [d for d in disks if d.dev_type in unmap_types]
       disks = ExpandCheckDisks(unmap_disks, unmap_disks)
@@ -888,6 +1036,9 @@ class TLMigrateInstance(Tasklet):
       self._GoStandalone()
       self._GoReconnect(True)
       self._WaitUntilSync()
+    elif utils.AnyDiskOfType(disks, [constants.DT_ZFS]):
+      # Handle ZFS replication before migration
+      self._ZfsReplicateDisks()
 
     self._OpenInstanceDisks(self.source_node_uuid, False)
     self._OpenInstanceDisks(self.target_node_uuid, False)
@@ -959,6 +1110,11 @@ class TLMigrateInstance(Tasklet):
 
       time.sleep(self._MIGRATION_POLL_INTERVAL)
 
+    # For ZFS, perform final sync before finalization
+    disks = self.cfg.GetInstanceDisks(self.instance.uuid)
+    if utils.AnyDiskOfType(disks, [constants.DT_ZFS]):
+      self._ZfsFinalSync()
+
     # Always call finalize on both source and target, they should compose
     # a single operation, consisting of (potentially) parallel steps, that
     # should be always attempted/retried together (like in _AbortMigration)
@@ -1002,9 +1158,9 @@ class TLMigrateInstance(Tasklet):
     elif utils.AnyDiskOfType(disks, constants.DTS_EXT_MIRROR):
       self._OpenInstanceDisks(self.target_node_uuid, True)
 
-    # If the instance's disk template is `rbd' or `ext' and there was a
+    # If the instance's disk template is `rbd', `ext', or `zfs' and there was a
     # successful migration, unmap the device from the source node.
-    unmap_types = (constants.DT_RBD, constants.DT_EXT)
+    unmap_types = (constants.DT_RBD, constants.DT_EXT, constants.DT_ZFS)
 
     if utils.AnyDiskOfType(disks, unmap_types):
       unmap_disks = [d for d in disks if d.dev_type in unmap_types]

@@ -328,6 +328,7 @@ $(THH.declareLADT ''String "DiskTemplate"
        , ("DTRbd",        "rbd")
        , ("DTExt",        "ext")
        , ("DTGluster",    "gluster")
+       , ("DTZfs",        "zfs")
        ])
 $(THH.makeJSONInstance ''DiskTemplate)
 
@@ -352,6 +353,7 @@ diskTemplateMovable DTDrbd8       = False
 diskTemplateMovable DTRbd         = True
 diskTemplateMovable DTExt         = True
 diskTemplateMovable DTGluster     = True
+diskTemplateMovable DTZfs         = True
 
 -- | Data type representing what items the tag operations apply to.
 $(THH.declareLADT ''String "TagKind"
@@ -521,6 +523,7 @@ $(THH.declareLADT ''String "StorageType"
   , ("StorageBlock", "blockdev")
   , ("StorageRados", "rados")
   , ("StorageExt", "ext")
+  , ("StorageZfs", "zfs")
   ])
 $(THH.makeJSONInstance ''StorageType)
 
@@ -545,6 +548,7 @@ data StorageUnit = SUFile StorageKey
                  | SUBlock StorageKey
                  | SURados StorageKey
                  | SUExt StorageKey
+                 | SUZfs StorageKey
                  deriving (Eq)
 
 instance Show StorageUnit where
@@ -557,6 +561,7 @@ instance Show StorageUnit where
   show (SUBlock key) = showSUSimple StorageBlock key
   show (SURados key) = showSUSimple StorageRados key
   show (SUExt key) = showSUSimple StorageExt key
+  show (SUZfs key) = showSUSimple StorageZfs key
 
 instance JSON StorageUnit where
   showJSON (SUFile key) = showJSON (StorageFile, key, []::[String])
@@ -568,6 +573,7 @@ instance JSON StorageUnit where
   showJSON (SUBlock key) = showJSON (StorageBlock, key, []::[String])
   showJSON (SURados key) = showJSON (StorageRados, key, []::[String])
   showJSON (SUExt key) = showJSON (StorageExt, key, []::[String])
+  showJSON (SUZfs key) = showJSON (StorageZfs, key, []::[String])
 -- FIXME: add readJSON implementation
   readJSON _ = fail "Not implemented"
 
@@ -591,6 +597,7 @@ diskTemplateToStorageType DTRbd = StorageRados
 diskTemplateToStorageType DTDiskless = StorageDiskless
 diskTemplateToStorageType DTBlock = StorageBlock
 diskTemplateToStorageType DTGluster = StorageGluster
+diskTemplateToStorageType DTZfs = StorageZfs
 
 -- | Equips a raw storage unit with its parameters
 addParamsToStorageUnit :: SPExclusiveStorage -> StorageUnitRaw -> StorageUnit
@@ -603,6 +610,7 @@ addParamsToStorageUnit _ (SURaw StorageGluster key) = SUGluster key
 addParamsToStorageUnit es (SURaw StorageLvmPv key) = SULvmPv key es
 addParamsToStorageUnit es (SURaw StorageLvmVg key) = SULvmVg key es
 addParamsToStorageUnit _ (SURaw StorageRados key) = SURados key
+addParamsToStorageUnit _ (SURaw StorageZfs key) = SUZfs key
 
 -- | Node evac modes.
 --

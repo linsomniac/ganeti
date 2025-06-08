@@ -72,5 +72,40 @@ JOB_FILE_RE = re.compile(r"^job-(%s)$" % JOB_ID_TEMPLATE)
 # might be different at runtime).
 HVC_DEFAULTS[HT_XEN_HVM][HV_VNC_PASSWORD_FILE] = pathutils.VNC_PASSWORD_FILE
 
+# Disk template constants (temporary until auto-generated)
+DT_DISKLESS = "diskless"
+DT_PLAIN = "plain"
+DT_DRBD8 = "drbd"
+DT_FILE = "file"
+DT_SHARED_FILE = "sharedfile"
+DT_BLOCK = "blockdev"
+DT_RBD = "rbd"
+DT_EXT = "ext"
+DT_GLUSTER = "gluster"
+DT_ZFS = "zfs"
+
+# ZFS storage type constant (temporary until auto-generated)
+ST_ZFS = "zfs"
+
+# Disk template sets (temporary until auto-generated)
+# External mirror templates (templates that handle replication externally)
+DTS_EXT_MIRROR = frozenset([DT_GLUSTER, DT_RBD, DT_EXT, DT_ZFS])
+
+# Internal mirror templates (templates that use Ganeti's internal mirroring)
+DTS_INT_MIRROR = frozenset([DT_DRBD8])
+
+# File-based templates
+DTS_FILEBASED = frozenset([DT_FILE, DT_SHARED_FILE])
+
+# Block-based templates
+DTS_BLOCK = frozenset([DT_BLOCK])
+
+# LVM-based templates
+DTS_LVM = frozenset([DT_PLAIN, DT_DRBD8])
+
+# Templates that are not disk-based (diskless)
+DTS_NOT_LVM = frozenset([DT_DISKLESS, DT_FILE, DT_SHARED_FILE, 
+                        DT_BLOCK, DT_RBD, DT_EXT, DT_GLUSTER, DT_ZFS])
+
 # Do not re-export imported modules
 del re, socket, pathutils, compat
