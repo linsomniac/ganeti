@@ -2941,12 +2941,27 @@ class ConfigWriter(object):
     """
     return self._ConfigData().cluster.volume_group_name
 
+  @ConfigSync(shared=1)
+  def GetZfsPool(self):
+    """Return the ZFS pool name.
+
+    """
+    return self._ConfigData().cluster.zfs_pool_name
+
   @ConfigSync()
   def SetVGName(self, vg_name):
     """Set the volume group name.
 
     """
     self._ConfigData().cluster.volume_group_name = vg_name
+    self._ConfigData().cluster.serial_no += 1
+
+  @ConfigSync()
+  def SetZfsPool(self, zfs_pool):
+    """Set the ZFS pool name.
+
+    """
+    self._ConfigData().cluster.zfs_pool_name = zfs_pool
     self._ConfigData().cluster.serial_no += 1
 
   @ConfigSync(shared=1)

@@ -486,7 +486,7 @@ def InitCluster(cluster_name, mac_prefix, # pylint: disable=R0913, R0914
                 master_netmask, master_netdev, file_storage_dir,
                 shared_file_storage_dir, gluster_storage_dir,
                 candidate_pool_size, ssh_key_type, ssh_key_bits,
-                secondary_ip=None, vg_name=None, beparams=None, nicparams=None,
+                secondary_ip=None, vg_name=None, zfs_pool=None, beparams=None, nicparams=None,
                 ndparams=None, hvparams=None, diskparams=None,
                 enabled_hypervisors=None, modify_etc_hosts=True,
                 modify_ssh_setup=True, maintain_node_health=False,
@@ -601,6 +601,12 @@ def InitCluster(cluster_name, mac_prefix, # pylint: disable=R0913, R0914
     if vgstatus:
       raise errors.OpPrereqError("Error: %s" % vgstatus, errors.ECODE_INVAL)
 
+  if zfs_pool:
+    # Check if ZFS pool is valid
+    result = utils.RunCmd(["zpool", "list", "-H", "-o", "name", zfs_pool])
+    if result.failed:
+      raise errors.OpPrereqError("ZFS pool '%s' does not exist or is not accessible" % zfs_pool, errors.ECODE_INVAL)
+
   drbd_enabled = constants.DT_DRBD8 in enabled_disk_templates
   _InitCheckDrbdHelper(drbd_helper, drbd_enabled)
 
@@ -685,11 +691,16 @@ def InitCluster(cluster_name, mac_prefix, # pylint: disable=R0913, R0914
                                  " %s" % (template,
                                           utils.CommaJoin(unknown_params)),
                                  errors.ECODE_INVAL)
-    utils.ForceDictType(dt_params, constants.DISK_DT_TYPES)
+    if template in constants.DISK_DT_TYPES:
+      utils.ForceDictType(dt_params, constants.DISK_DT_TYPES[template])
     if template == constants.DT_DRBD8 and vg_name is not None:
       # The default METAVG value is equal to the VG name set at init time,
       # if provided
       dt_params[constants.DRBD_DEFAULT_METAVG] = vg_name
+    if template == constants.DT_ZFS and zfs_pool is not None:
+      # The default pool value is equal to the ZFS pool name set at init time,
+      # if provided
+      dt_params["pool"] = zfs_pool
 
   try:
     utils.VerifyDictOptions(diskparams, constants.DISK_DT_DEFAULTS)
@@ -759,6 +770,7 @@ def InitCluster(cluster_name, mac_prefix, # pylint: disable=R0913, R0914
     highest_used_port=(constants.FIRST_DRBD_PORT - 1),
     mac_prefix=mac_prefix,
     volume_group_name=vg_name,
+    zfs_pool_name=zfs_pool,
     tcpudp_port_pool=set(),
     master_ip=clustername.ip,
     master_netmask=master_netmask,

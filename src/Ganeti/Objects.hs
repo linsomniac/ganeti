@@ -636,6 +636,8 @@ $(buildObject "Cluster" "cluster" $
   , simpleField "mac_prefix"                     [t| String                  |]
   , optionalField $
     simpleField "volume_group_name"              [t| String                  |]
+  , optionalField $
+    simpleField "zfs_pool_name"                  [t| String                  |]
   , simpleField "reserved_lvs"                   [t| [String]                |]
   , optionalField $
     simpleField "drbd_usermode_helper"           [t| String                  |]
