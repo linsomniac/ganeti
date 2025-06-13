@@ -72,6 +72,11 @@ def IsLvmEnabled(enabled_disk_templates):
   return len(constants.DTS_LVM & set(enabled_disk_templates)) != 0
 
 
+def IsZfsEnabled(enabled_disk_templates):
+  """Check whether or not ZFS disk template is enabled."""
+  return constants.DT_ZFS in enabled_disk_templates
+
+
 def LvmGetsEnabled(enabled_disk_templates, new_enabled_disk_templates):
   """Checks whether lvm was not enabled before, but will be enabled after
      the operation.

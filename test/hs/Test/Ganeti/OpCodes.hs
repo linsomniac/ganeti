@@ -222,6 +222,7 @@ instance Arbitrary OpCodes.OpCode where
           <*> emptyMUD                     -- hv_state
           <*> emptyMUD                     -- disk_state
           <*> genMaybe genName             -- vg_name
+          <*> genMaybe genName             -- zfs_pool
           <*> genMaybe arbitrary           -- enabled_hypervisors
           <*> genMaybe genEmptyContainer   -- hvparams
           <*> emptyMUD                     -- beparams

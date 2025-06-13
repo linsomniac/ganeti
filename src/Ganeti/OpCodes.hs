@@ -225,6 +225,7 @@ $(genOpCode "OpCode"
      , pHvState
      , pDiskState
      , pVgName
+     , pZfsPool
      , pEnabledHypervisors
      , pClusterHvParams
      , pClusterBeParams

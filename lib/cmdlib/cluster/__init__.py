@@ -1495,6 +1495,20 @@ class LUClusterSetParams(LogicalUnit):
         feedback_fn("Cluster LVM configuration already in desired"
                     " state, not changing")
 
+  def _SetZfsPool(self, feedback_fn):
+    """Determines and sets the new ZFS pool name.
+
+    """
+    if self.op.zfs_pool is not None:
+      new_pool = self.op.zfs_pool
+      if not new_pool:
+        new_pool = None
+      if new_pool != self.cfg.GetZfsPool():
+        self.cfg.SetZfsPool(new_pool)
+      else:
+        feedback_fn("Cluster ZFS configuration already in desired"
+                    " state, not changing")
+
   def _SetFileStorageDir(self, feedback_fn):
     """Set the file storage directory.
 
@@ -1656,6 +1670,7 @@ class LUClusterSetParams(LogicalUnit):
     self.cfg.Update(self.cluster, feedback_fn)
 
     self._SetVgName(feedback_fn)
+    self._SetZfsPool(feedback_fn)
 
     self.cluster = self.cfg.GetClusterInfo()
     self._SetFileStorageDir(feedback_fn)

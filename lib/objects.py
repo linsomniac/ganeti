@@ -1627,6 +1627,7 @@ class Cluster(TaggableObject):
     "tcpudp_port_pool",
     "mac_prefix",
     "volume_group_name",
+    "zfs_pool_name",
     "reserved_lvs",
     "drbd_usermode_helper",
     "default_bridge",

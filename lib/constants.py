@@ -87,6 +87,12 @@ DT_ZFS = "zfs"
 # ZFS storage type constant (temporary until auto-generated)
 ST_ZFS = "zfs"
 
+# Disk templates list (temporary until auto-generated)
+DISK_TEMPLATES = frozenset([
+    DT_DISKLESS, DT_PLAIN, DT_DRBD8, DT_FILE, DT_SHARED_FILE,
+    DT_BLOCK, DT_RBD, DT_EXT, DT_GLUSTER, DT_ZFS
+])
+
 # Disk template sets (temporary until auto-generated)
 # External mirror templates (templates that handle replication externally)
 DTS_EXT_MIRROR = frozenset([DT_GLUSTER, DT_RBD, DT_EXT, DT_ZFS])
@@ -106,6 +112,39 @@ DTS_LVM = frozenset([DT_PLAIN, DT_DRBD8])
 # Templates that are not disk-based (diskless)
 DTS_NOT_LVM = frozenset([DT_DISKLESS, DT_FILE, DT_SHARED_FILE, 
                         DT_BLOCK, DT_RBD, DT_EXT, DT_GLUSTER, DT_ZFS])
+
+# Disk template parameter defaults (temporary until auto-generated)
+DISK_DT_DEFAULTS = {
+    DT_DISKLESS: {},
+    DT_PLAIN: {
+        "stripes": 1,
+        "barriers": True,
+        "metavg": None,
+    },
+    DT_DRBD8: {
+        "barriers": True,
+        "data_stripes": 1,
+        "meta_stripes": 1,
+        "disk_custom": "",
+        "net_custom": "",
+        "metavg": None,
+    },
+    DT_FILE: {
+        "driver": "loop",
+    },
+    DT_SHARED_FILE: {
+        "driver": "loop",
+    },
+    DT_BLOCK: {},
+    DT_RBD: {
+        "pool": "rbd",
+    },
+    DT_EXT: {},
+    DT_GLUSTER: {},
+    DT_ZFS: {
+        "pool": "pool",  # Default ZFS pool name
+    },
+}
 
 # Do not re-export imported modules
 del re, socket, pathutils, compat

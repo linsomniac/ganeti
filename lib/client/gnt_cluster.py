@@ -137,6 +137,28 @@ def _InitVgName(opts, enabled_disk_templates):
   return vg_name
 
 
+def _InitZfsPool(opts, enabled_disk_templates):
+  """Initialize the ZFS pool name.
+
+  @type enabled_disk_templates: list of strings
+  @param enabled_disk_templates: cluster-wide enabled disk templates
+
+  """
+  zfs_pool = None
+  if opts.zfs_pool is not None:
+    zfs_pool = opts.zfs_pool
+    if zfs_pool:
+      if not utils.IsZfsEnabled(enabled_disk_templates):
+        ToStdout("You specified a ZFS pool with --zfs-pool, but you did not"
+                 " enable the ZFS disk template.")
+    elif utils.IsZfsEnabled(enabled_disk_templates):
+      raise errors.OpPrereqError(
+          "ZFS disk template is enabled, but ZFS pool name not set.")
+  elif utils.IsZfsEnabled(enabled_disk_templates):
+    zfs_pool = "pool"  # Default ZFS pool name
+  return zfs_pool
+
+
 def _InitDrbdHelper(opts, enabled_disk_templates, feedback_fn=ToStdout):
   """Initialize the DRBD usermode helper.
 
@@ -174,6 +196,7 @@ def InitCluster(opts, args):
 
   try:
     vg_name = _InitVgName(opts, enabled_disk_templates)
+    zfs_pool = _InitZfsPool(opts, enabled_disk_templates)
     drbd_helper = _InitDrbdHelper(opts, enabled_disk_templates)
   except errors.OpPrereqError as e:
     ToStderr(str(e))
@@ -237,7 +260,8 @@ def InitCluster(opts, args):
       diskparams[templ] = {}
     diskparams[templ] = objects.FillDict(constants.DISK_DT_DEFAULTS[templ],
                                          diskparams[templ])
-    utils.ForceDictType(diskparams[templ], constants.DISK_DT_TYPES)
+    if templ in constants.DISK_DT_TYPES:
+      utils.ForceDictType(diskparams[templ], constants.DISK_DT_TYPES[templ])
 
   # prepare ipolicy dict
   ipolicy = CreateIPolicyFromOpts(
@@ -318,6 +342,7 @@ def InitCluster(opts, args):
   bootstrap.InitCluster(cluster_name=args[0],
                         secondary_ip=opts.secondary_ip,
                         vg_name=vg_name,
+                        zfs_pool=zfs_pool,
                         mac_prefix=opts.mac_prefix,
                         master_netmask=master_netmask,
                         master_netdev=master_netdev,
@@ -1337,6 +1362,24 @@ def _GetVgName(opts, enabled_disk_templates):
   return vg_name
 
 
+def _GetZfsPool(opts, enabled_disk_templates):
+  """Determine the ZFS pool name.
+
+  @type enabled_disk_templates: list of strings
+  @param enabled_disk_templates: cluster-wide enabled disk-templates
+
+  """
+  # consistency between ZFS pool name and enabled disk templates
+  zfs_pool = None
+  if opts.zfs_pool is not None:
+    zfs_pool = opts.zfs_pool
+  if enabled_disk_templates:
+    if zfs_pool and not utils.IsZfsEnabled(enabled_disk_templates):
+      ToStdout("You specified a ZFS pool with --zfs-pool, but you did not"
+               " enable the ZFS disk template.")
+  return zfs_pool
+
+
 def _GetDrbdHelper(opts, enabled_disk_templates):
   """Determine the DRBD usermode helper.
 
@@ -1373,6 +1416,7 @@ def SetClusterParams(opts, args):
 
   """
   if not (opts.vg_name is not None or
+          opts.zfs_pool is not None or
           opts.drbd_helper is not None or
           opts.enabled_hypervisors or opts.hvparams or
           opts.beparams or opts.nicparams or
@@ -1416,6 +1460,7 @@ def SetClusterParams(opts, args):
 
   enabled_disk_templates = _GetEnabledDiskTemplates(opts)
   vg_name = _GetVgName(opts, enabled_disk_templates)
+  zfs_pool = _GetZfsPool(opts, enabled_disk_templates)
 
   try:
     drbd_helper = _GetDrbdHelper(opts, enabled_disk_templates)
@@ -1434,8 +1479,9 @@ def SetClusterParams(opts, args):
 
   diskparams = dict(opts.diskparams)
 
-  for dt_params in diskparams.values():
-    utils.ForceDictType(dt_params, constants.DISK_DT_TYPES)
+  for dt_name, dt_params in diskparams.items():
+    if dt_name in constants.DISK_DT_TYPES:
+      utils.ForceDictType(dt_params, constants.DISK_DT_TYPES[dt_name])
 
   beparams = opts.beparams
   utils.ForceDictType(beparams, constants.BES_PARAMETER_COMPAT)
@@ -1518,6 +1564,7 @@ def SetClusterParams(opts, args):
 
   op = opcodes.OpClusterSetParams(
     vg_name=vg_name,
+    zfs_pool=zfs_pool,
     drbd_helper=drbd_helper,
     enabled_hypervisors=hvlist,
     hvparams=hvparams,
@@ -2481,7 +2528,7 @@ commands = {
     [BACKEND_OPT, CP_SIZE_OPT, ENABLED_HV_OPT, GLOBAL_FILEDIR_OPT,
      HVLIST_OPT, MAC_PREFIX_OPT, MASTER_NETDEV_OPT, MASTER_NETMASK_OPT,
      NIC_PARAMS_OPT, NOMODIFY_ETCHOSTS_OPT, NOMODIFY_SSH_SETUP_OPT,
-     SECONDARY_IP_OPT, VG_NAME_OPT, MAINTAIN_NODE_HEALTH_OPT, UIDPOOL_OPT,
+     SECONDARY_IP_OPT, VG_NAME_OPT, ZFS_POOL_OPT, MAINTAIN_NODE_HEALTH_OPT, UIDPOOL_OPT,
      DRBD_HELPER_OPT, DEFAULT_IALLOCATOR_OPT, DEFAULT_IALLOCATOR_PARAMS_OPT,
      PRIMARY_IP_VERSION_OPT, PREALLOC_WIPE_DISKS_OPT, NODE_PARAMS_OPT,
      GLOBAL_SHARED_FILEDIR_OPT, USE_EXTERNAL_MIP_SCRIPT, DISK_PARAMS_OPT,
@@ -2571,7 +2618,7 @@ commands = {
      BACKEND_OPT, CP_SIZE_OPT, RQL_OPT, MAX_TRACK_OPT, INSTALL_IMAGE_OPT,
      INSTANCE_COMMUNICATION_NETWORK_OPT, ENABLED_HV_OPT, HVLIST_OPT,
      MAC_PREFIX_OPT, MASTER_NETDEV_OPT, MASTER_NETMASK_OPT, NIC_PARAMS_OPT,
-     VG_NAME_OPT, MAINTAIN_NODE_HEALTH_OPT, UIDPOOL_OPT, ADD_UIDS_OPT,
+     VG_NAME_OPT, ZFS_POOL_OPT, MAINTAIN_NODE_HEALTH_OPT, UIDPOOL_OPT, ADD_UIDS_OPT,
      REMOVE_UIDS_OPT, DRBD_HELPER_OPT, DEFAULT_IALLOCATOR_OPT,
      DEFAULT_IALLOCATOR_PARAMS_OPT, RESERVED_LVS_OPT, DRY_RUN_OPT, PRIORITY_OPT,
      PREALLOC_WIPE_DISKS_OPT, NODE_PARAMS_OPT, USE_EXTERNAL_MIP_SCRIPT,

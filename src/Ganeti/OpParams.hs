@@ -125,6 +125,7 @@ module Ganeti.OpParams
   , pZeroingImage
   , pCompressionTools
   , pVgName
+  , pZfsPool
   , pEnabledHypervisors
   , pHypervisor
   , pClusterHvParams
@@ -669,6 +670,12 @@ pVgName :: Field
 pVgName =
   withDoc "Volume group name" $
   optionalStringField "vg_name"
+
+-- | ZFS pool name.
+pZfsPool :: Field
+pZfsPool =
+  withDoc "ZFS pool name" $
+  optionalStringField "zfs_pool"
 
 pEnabledHypervisors :: Field
 pEnabledHypervisors =
