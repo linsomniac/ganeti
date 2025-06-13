@@ -268,6 +268,7 @@ __all__ = [
   "ZEROING_IMAGE_OPT",
   "ZEROING_TIMEOUT_FIXED_OPT",
   "ZEROING_TIMEOUT_PER_MIB_OPT",
+  "ZFS_POOL_OPT",
   ]
 
 
@@ -1128,6 +1129,12 @@ VG_NAME_OPT = cli_option("--vg-name", dest="vg_name",
                                " name (cluster-wide) for disk allocation"
                                " [%s]" % constants.DEFAULT_VG),
                          metavar="VG", default=None)
+
+ZFS_POOL_OPT = cli_option("--zfs-pool", dest="zfs_pool",
+                          help=("Enables ZFS and specifies the ZFS pool"
+                                " name (cluster-wide) for disk allocation"
+                                " [pool]"),
+                          metavar="POOL", default=None)
 
 YES_DOIT_OPT = cli_option("--yes-do-it", "--ya-rly", dest="yes_do_it",
                           help="Destroy cluster", action="store_true")
