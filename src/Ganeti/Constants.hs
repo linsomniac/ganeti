@@ -2393,6 +2393,9 @@ rbdAccess = "access"
 rbdPool :: String
 rbdPool = "pool"
 
+zfsPool :: String
+zfsPool = "pool"
+
 diskDtTypes :: Map String VType
 diskDtTypes =
   Map.fromList [(drbdResyncRate, VTypeInt),
@@ -2415,7 +2418,8 @@ diskDtTypes =
                 (rbdPool, VTypeString),
                 (glusterHost, VTypeString),
                 (glusterVolume, VTypeString),
-                (glusterPort, VTypeInt)
+                (glusterPort, VTypeInt),
+                (zfsPool, VTypeString)
                ]
 
 diskDtParameters :: FrozenSet String
@@ -4229,6 +4233,9 @@ defaultPlanAhead = 20
 defaultRbdPool :: String
 defaultRbdPool = "rbd"
 
+defaultZfsPool :: String
+defaultZfsPool = "tank"
+
 diskLdDefaults :: Map DiskTemplate (Map String PyValueEx)
 diskLdDefaults =
   Map.fromList
@@ -4264,6 +4271,9 @@ diskLdDefaults =
                 , (glusterVolume, PyValueEx glusterVolumeDefault)
                 , (glusterPort, PyValueEx glusterPortDefault)
                 ])
+  , (DTZfs, Map.fromList
+            [ (zfsPool, PyValueEx defaultZfsPool)
+            ])
   ]
 
 diskDtDefaults :: Map DiskTemplate (Map String PyValueEx)
@@ -4304,6 +4314,9 @@ diskDtDefaults =
                 , (glusterVolume, PyValueEx glusterVolumeDefault)
                 , (glusterPort, PyValueEx glusterPortDefault)
                 ])
+  , (DTZfs, Map.fromList
+            [ (zfsPool, PyValueEx defaultZfsPool)
+            ])
   ]
 
 niccDefaults :: Map String PyValueEx
