@@ -943,21 +943,21 @@ dtsExtMirror :: FrozenSet String
 dtsExtMirror =
   ConstantUtils.mkSet $
   map Types.diskTemplateToRaw
-  [DTDiskless, DTBlock, DTExt, DTSharedFile, DTRbd, DTGluster]
+  [DTDiskless, DTBlock, DTExt, DTSharedFile, DTRbd, DTGluster] -- DTZfs removed
 
 -- | The set of non-lvm-based disk templates
 dtsNotLvm :: FrozenSet String
 dtsNotLvm =
   ConstantUtils.mkSet $
   map Types.diskTemplateToRaw
-  [DTSharedFile, DTDiskless, DTBlock, DTExt, DTFile, DTRbd, DTGluster]
+  [DTSharedFile, DTDiskless, DTBlock, DTExt, DTFile, DTRbd, DTGluster, DTZfs] -- DTZfs confirmed here
 
 -- | The set of disk templates which can be grown
 dtsGrowable :: FrozenSet String
 dtsGrowable =
   ConstantUtils.mkSet $
   map Types.diskTemplateToRaw
-  [DTSharedFile, DTDrbd8, DTPlain, DTExt, DTFile, DTRbd, DTGluster]
+  [DTSharedFile, DTDrbd8, DTPlain, DTExt, DTFile, DTRbd, DTGluster, DTZfs] -- DTZfs added
 
 -- | The set of disk templates that allow adoption
 dtsMayAdopt :: FrozenSet String
@@ -996,7 +996,7 @@ dtsCopyable =
 -- | The set of disk templates which can be snapshot.
 dtsSnapshotCapable :: FrozenSet String
 dtsSnapshotCapable =
-  ConstantUtils.mkSet $ map Types.diskTemplateToRaw [DTPlain, DTDrbd8, DTExt]
+  ConstantUtils.mkSet $ map Types.diskTemplateToRaw [DTPlain, DTDrbd8, DTExt, DTZfs] -- DTZfs added
 
 -- | The set of disk templates that are supported by exclusive_storage
 dtsExclStorage :: FrozenSet String
@@ -1011,7 +1011,7 @@ dtsNoFreeSpaceCheck =
 dtsBlock :: FrozenSet String
 dtsBlock =
   ConstantUtils.mkSet $
-  map Types.diskTemplateToRaw [DTPlain, DTDrbd8, DTBlock, DTRbd, DTExt]
+  map Types.diskTemplateToRaw [DTPlain, DTDrbd8, DTBlock, DTRbd, DTExt, DTZfs] -- DTZfs added
 
 -- | The set of lvm-based disk templates
 dtsLvm :: FrozenSet String
