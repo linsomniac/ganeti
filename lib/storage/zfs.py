@@ -112,12 +112,15 @@ class ZfsBlockDevice(base.BlockDev):
         # 1. Precondition Check: Dataset existence
         dataset_check_cmd = ["zfs", "list", "-H", "-o", "name", full_dataset]
         dataset_check_result = utils.RunCmd(dataset_check_cmd)
+        if dataset_check_result.failed:
+            raise errors.BlockDeviceError(dataset_check_result.fail_reason)
         if dataset_check_result.GetReturnCode() == 0 and dataset_check_result.stdout.strip() == full_dataset:
             msg = "ZFS dataset '%s' already exists." % full_dataset
             logging.error(msg)
             raise errors.BlockDeviceError(msg)
         elif dataset_check_result.GetReturnCode() != 0 and "dataset does not exist" not in dataset_check_result.stderr:
             # An actual error occurred with zfs list, not just "dataset does not exist"
+            # This condition implies dataset_check_result.failed was false.
             msg = "Failed to check for existing ZFS dataset '%s': %s" % (
                 full_dataset, dataset_check_result.stderr
             )
@@ -252,6 +255,10 @@ class ZfsBlockDevice(base.BlockDev):
         logging.info("Verifying removal of ZFS volume %s", full_dataset)
         post_check_result = utils.RunCmd(dataset_check_cmd) # Reuse dataset_check_cmd
 
+        if post_check_result.failed:
+            # If RunCmd failed, it's an error regardless of what we wanted to check
+            raise errors.BlockDeviceError(post_check_result.fail_reason)
+
         if post_check_result.GetReturnCode() == 0 and post_check_result.stdout.strip() == full_dataset:
             # Dataset still exists after destroy command
             msg = "ZFS dataset '%s' still exists after destroy operation." % full_dataset
@@ -260,6 +267,7 @@ class ZfsBlockDevice(base.BlockDev):
         elif post_check_result.GetReturnCode() != 0 and "dataset does not exist" not in post_check_result.stderr:
             # An actual error occurred with zfs list, beyond "dataset does not exist"
             # This is unexpected, as we want it to not exist. Log as warning.
+            # This condition implies post_check_result.failed was false.
             logging.warning("Verification check for dataset '%s' removal encountered an issue: %s",
                             full_dataset, post_check_result.stderr)
 
@@ -490,12 +498,15 @@ class ZfsBlockDevice(base.BlockDev):
         # 2. Check if snapshot already exists
         snap_check_cmd = ["zfs", "list", "-H", "-t", "snapshot", "-o", "name", snap_dataset]
         snap_check_result = utils.RunCmd(snap_check_cmd)
+        if snap_check_result.failed:
+            raise errors.BlockDeviceError(snap_check_result.fail_reason)
         if snap_check_result.GetReturnCode() == 0 and snap_check_result.stdout.strip() == snap_dataset:
             msg = "ZFS snapshot '%s' already exists." % snap_dataset
             logging.error(msg)
             raise errors.BlockDeviceError(msg)
         elif snap_check_result.GetReturnCode() != 0 and "dataset does not exist" not in snap_check_result.stderr:
             # An actual error occurred with zfs list, not just "dataset does not exist"
+            # This condition implies snap_check_result.failed was false.
             msg = "Failed to check for existing ZFS snapshot '%s': %s" % (
                 snap_dataset, snap_check_result.stderr
             )
@@ -512,9 +523,14 @@ class ZfsBlockDevice(base.BlockDev):
 
         # Post-Snapshot Verification
         verify_snap_result = utils.RunCmd(snap_check_cmd) # Re-use snap_check_cmd
-        if verify_snap_result.failed or verify_snap_result.stdout.strip() != snap_dataset:
-            msg = "Verification failed for ZFS snapshot '%s' after creation: %s" % (
-                snap_dataset, verify_snap_result.stderr if verify_snap_result.failed else "snapshot not found"
+        if verify_snap_result.failed:
+            # If RunCmd itself failed, raise immediately with fail_reason
+            raise errors.BlockDeviceError(verify_snap_result.fail_reason)
+
+        # If RunCmd succeeded, then check the logical condition (stdout)
+        if verify_snap_result.stdout.strip() != snap_dataset:
+            msg = "Verification failed for ZFS snapshot '%s' after creation: snapshot not found (command output: %s)" % (
+                snap_dataset, verify_snap_result.stdout
             )
             logging.error(msg)
             # No cleanup action for failed snapshot creation, as it likely didn't create anything.
