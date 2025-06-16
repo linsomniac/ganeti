@@ -150,6 +150,7 @@ templateMirrorType DTDrbd8      = MirrorInternal
 templateMirrorType DTRbd        = MirrorExternal
 templateMirrorType DTExt        = MirrorExternal
 templateMirrorType DTGluster    = MirrorExternal
+templateMirrorType DTZfs        = MirrorExternal
 
 -- | The resource spec type.
 data RSpec = RSpec
