@@ -39,6 +39,9 @@ class ZfsBlockDevice(base.BlockDev):
         self.pool_name, self.dataset_name = unique_id
         # ZFS datasets appear as /dev/zvol/<pool>/<dataset>
         self.dev_path = "/dev/zvol/%s/%s" % (self.pool_name, self.dataset_name)
+        
+        # Try to attach to existing device (similar to RADOS)
+        self.Attach()
 
     @staticmethod
     def _ValidateName(name):
@@ -126,6 +129,9 @@ class ZfsBlockDevice(base.BlockDev):
     def Attach(self, **kwargs):
         """Attach to an existing ZFS dataset."""
         import time
+        
+        # Reset attached state at the beginning (like RBD does)
+        self.attached = False
         
         full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
 
