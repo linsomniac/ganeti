@@ -519,19 +519,15 @@ class ZfsPoolStorage(_Base):
 
       pool_name, size_str, alloc_str, free_str = parts[:4]
 
-      # Convert from human readable format (e.g., "10G") to bytes
+      # Convert from human readable format (e.g., "10G") to MiB
+      # Note: utils.ParseUnit returns values in MiB, not bytes
       try:
-        size_bytes = utils.ParseUnit(size_str)
-        alloc_bytes = utils.ParseUnit(alloc_str)
-        free_bytes = utils.ParseUnit(free_str)
+        size_mib = utils.ParseUnit(size_str)
+        alloc_mib = utils.ParseUnit(alloc_str)
+        free_mib = utils.ParseUnit(free_str)
       except (ValueError, errors.UnitParseError):
         logging.warning("Cannot parse ZFS pool sizes for %s", pool_name)
         continue
-
-      # Convert to MiB as expected by storage framework
-      size_mib = int(size_bytes / (1024 * 1024))
-      alloc_mib = int(alloc_bytes / (1024 * 1024))
-      free_mib = int(free_bytes / (1024 * 1024))
 
       entry = {
         "pool": pool_name,

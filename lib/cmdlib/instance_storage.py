@@ -64,6 +64,7 @@ _DISK_TEMPLATE_NAME_PREFIX = {
   constants.DT_EXT: ".ext",
   constants.DT_FILE: ".file",
   constants.DT_SHARED_FILE: ".sharedfile",
+  constants.DT_ZFS: ".zfs",
   }
 
 
@@ -659,6 +660,12 @@ def GenerateDiskTemplate(
                                        disk[constants.IDISK_ADOPT])
     elif template_name == constants.DT_RBD:
       logical_id_fn = lambda idx, _, disk: ("rbd", names[idx])
+    elif template_name == constants.DT_ZFS:
+      def logical_id_fn(idx, _, disk):
+        zfs_defaults = full_disk_params.get(constants.DT_ZFS, {})
+        zfs_pool = disk.get("pool", 
+                           zfs_defaults.get("pool", "tank"))
+        return (zfs_pool, names[idx])
     elif template_name == constants.DT_EXT:
       def logical_id_fn(idx, _, disk):
         provider = disk.get(constants.IDISK_PROVIDER, None)

@@ -75,6 +75,7 @@ from ganeti.storage import bdev
 from ganeti.storage import drbd
 from ganeti.storage import extstorage
 from ganeti.storage import filestorage
+from ganeti.storage import container
 from ganeti import objects
 from ganeti import ssconf
 from ganeti import serializer
@@ -784,6 +785,54 @@ def _GetFileStorageSpaceInfo(path, params):
   return filestorage.GetFileStorageSpaceInfo(path)
 
 
+def _GetZfsPoolSpaceInfo(pool_name, params):
+  """Retrieves information about a ZFS pool.
+
+  @type pool_name: string
+  @param pool_name: name of the ZFS pool
+  @type params: list
+  @param params: list of storage parameters (currently ignored for ZFS)
+  @rtype: dict
+  @return: dictionary with pool name, total size and free space
+
+  """
+  _CheckStorageParams(params, 0)
+  
+  try:
+    # Create ZFS storage instance and get pool information
+    zfs_storage = container.ZfsPoolStorage()
+    
+    # Get pool data - request size and free fields
+    pool_data = zfs_storage.List(pool_name, [constants.SF_SIZE, constants.SF_FREE])
+    
+    if not pool_data:
+      # Pool doesn't exist or no data returned
+      pool_size = None
+      pool_free = None
+    else:
+      # pool_data is a list of rows, we want the first (and should be only) row
+      # The List method returns data in the order of requested fields
+      pool_row = pool_data[0]
+      if len(pool_row) >= 2:
+        pool_size = pool_row[0]  # size field
+        pool_free = pool_row[1]  # free field
+      else:
+        pool_size = None
+        pool_free = None
+  
+  except errors.StorageError:
+    # ZFS command failed or pool doesn't exist
+    pool_size = None
+    pool_free = None
+  
+  return {
+    "type": constants.ST_ZFS,
+    "name": pool_name,
+    "storage_size": pool_size,
+    "storage_free": pool_free,
+  }
+
+
 # FIXME: implement storage reporting for all missing storage types.
 _STORAGE_TYPE_INFO_FN = {
   constants.ST_BLOCK: None,
@@ -795,6 +844,7 @@ _STORAGE_TYPE_INFO_FN = {
   constants.ST_SHARED_FILE: None,
   constants.ST_GLUSTER: None,
   constants.ST_RADOS: None,
+  constants.ST_ZFS: _GetZfsPoolSpaceInfo,
 }
 
 
