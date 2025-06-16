@@ -132,6 +132,7 @@ data DiskLogicalId
   | LIDBlockDev BlockDriver String -- ^ Driver, path (must be under /dev)
   | LIDRados String String -- ^ Unused, path
   | LIDExt String String -- ^ ExtProvider, unique name
+  | LIDZfs String String -- ^ Pool, dataset
     deriving (Show, Eq)
 
 -- | Mapping from a logical id to a disk type.
@@ -144,6 +145,7 @@ lidDiskType (LIDGluster  {}) = DTGluster
 lidDiskType (LIDBlockDev {}) = DTBlock
 lidDiskType (LIDRados {}) = DTRbd
 lidDiskType (LIDExt {}) = DTExt
+lidDiskType (LIDZfs {}) = DTZfs
 
 -- | Builds the extra disk_type field for a given logical id.
 lidEncodeType :: DiskLogicalId -> [(String, JSValue)]
@@ -164,6 +166,7 @@ encodeDLId (LIDGluster driver name) = JSArray [showJSON driver, showJSON name]
 encodeDLId (LIDBlockDev driver name) = JSArray [showJSON driver, showJSON name]
 encodeDLId (LIDExt extprovider name) =
   JSArray [showJSON extprovider, showJSON name]
+encodeDLId (LIDZfs pool dataset) = JSArray [showJSON pool, showJSON dataset]
 
 -- | Custom encoder for DiskLogicalId, composing both the logical id
 -- and the extra disk_type field.
@@ -234,6 +237,13 @@ decodeDLId obj lid = do
             <$> readJSON extprovider
             <*> readJSON name
         _ -> fail "Can't read logical_id for extstorage type"
+    DTZfs ->
+      case lid of
+        JSArray [pool, dataset] ->
+          LIDZfs
+            <$> readJSON pool
+            <*> readJSON dataset
+        _ -> fail "Can't read logical_id for ZFS type"
     DTDiskless ->
       fail "Retrieved 'diskless' disk."
 
