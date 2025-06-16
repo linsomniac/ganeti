@@ -619,6 +619,8 @@ class Disk(ConfigObject):
       return self.logical_id[1]
     elif self.dev_type == constants.DT_RBD:
       return "/dev/%s/%s" % (self.logical_id[0], self.logical_id[1])
+    elif self.dev_type == constants.DT_ZFS:
+      return "/dev/zvol/%s/%s" % (self.logical_id[0], self.logical_id[1])
     return None
 
   def ChildrenNeeded(self):
@@ -664,7 +666,7 @@ class Disk(ConfigObject):
     if self.dev_type in [constants.DT_PLAIN, constants.DT_FILE,
                          constants.DT_BLOCK, constants.DT_RBD,
                          constants.DT_EXT, constants.DT_SHARED_FILE,
-                         constants.DT_GLUSTER]:
+                         constants.DT_GLUSTER, constants.DT_ZFS]:
       result = [node_uuid]
     elif self.dev_type in constants.DTS_DRBD:
       result = [self.logical_id[0], self.logical_id[1]]
@@ -752,7 +754,8 @@ class Disk(ConfigObject):
     """
     if self.dev_type in (constants.DT_PLAIN, constants.DT_FILE,
                          constants.DT_RBD, constants.DT_EXT,
-                         constants.DT_SHARED_FILE, constants.DT_GLUSTER):
+                         constants.DT_SHARED_FILE, constants.DT_GLUSTER,
+                         constants.DT_ZFS):
       self.size += amount
     elif self.dev_type == constants.DT_DRBD8:
       if self.children:
