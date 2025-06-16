@@ -125,6 +125,8 @@ class ZfsBlockDevice(base.BlockDev):
 
     def Attach(self, **kwargs):
         """Attach to an existing ZFS dataset."""
+        import time
+        
         full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
 
         # Check if dataset exists
@@ -132,13 +134,25 @@ class ZfsBlockDevice(base.BlockDev):
         if result.failed:
             return False
 
-        # Get device info
-        if os.path.exists(self.dev_path):
-            stat_info = os.stat(self.dev_path)
-            self.major = os.major(stat_info.st_rdev)
-            self.minor = os.minor(stat_info.st_rdev)
-            self.attached = True
-            return True
+        # Wait for device to become available (ZFS zvol creation can be delayed)
+        max_wait = 30  # Wait up to 30 seconds
+        wait_interval = 0.5  # Check every 0.5 seconds
+        waited = 0
+        
+        while waited < max_wait:
+            if os.path.exists(self.dev_path):
+                try:
+                    stat_info = os.stat(self.dev_path)
+                    self.major = os.major(stat_info.st_rdev)
+                    self.minor = os.minor(stat_info.st_rdev)
+                    self.attached = True
+                    return True
+                except (OSError, IOError):
+                    # Device exists but not ready, continue waiting
+                    pass
+            
+            time.sleep(wait_interval)
+            waited += wait_interval
 
         return False
 
