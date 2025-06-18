@@ -138,8 +138,8 @@ class ZfsBlockDevice(base.BlockDev):
         logging.info("Executing ZFS create command: %s", utils.ShellQuoteArgs(create_cmd))
         create_result = utils.RunCmd(create_cmd)
         if create_result.failed:
-            msg = "Can't create ZFS dataset '%s': %s" % (
-                full_dataset, create_result.stderr
+            msg = "Can't create ZFS dataset '%s': stderr: %s, output: %s" % (
+                full_dataset, create_result.stderr, create_result.output
             )
             logging.error(msg)
             raise errors.BlockDeviceError(msg)
