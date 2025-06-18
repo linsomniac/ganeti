@@ -112,20 +112,41 @@ class ZfsBlockDevice(base.BlockDev):
         # 1. Precondition Check: Dataset existence
         dataset_check_cmd = ["zfs", "list", "-H", "-o", "name", full_dataset]
         dataset_check_result = utils.RunCmd(dataset_check_cmd)
+
         if dataset_check_result.failed:
-            raise errors.BlockDeviceError(dataset_check_result.fail_reason)
-        if dataset_check_result.GetReturnCode() == 0 and dataset_check_result.stdout.strip() == full_dataset:
-            msg = "ZFS dataset '%s' already exists." % full_dataset
-            logging.error(msg)
-            raise errors.BlockDeviceError(msg)
-        elif dataset_check_result.GetReturnCode() != 0 and "dataset does not exist" not in dataset_check_result.stderr:
-            # An actual error occurred with zfs list, not just "dataset does not exist"
-            # This condition implies dataset_check_result.failed was false.
-            msg = "Failed to check for existing ZFS dataset '%s': %s" % (
-                full_dataset, dataset_check_result.stderr
+            # This means utils.RunCmd failed, e.g., command not found or other execution error
+            msg = "Failed to execute ZFS dataset check command for '%s': %s" % (
+                full_dataset, dataset_check_result.fail_reason
             )
             logging.error(msg)
             raise errors.BlockDeviceError(msg)
+        else:
+            # Command executed, now check its outcome
+            if dataset_check_result.GetReturnCode() == 0:
+                # Command succeeded, check if stdout indicates dataset exists
+                if dataset_check_result.stdout.strip() == full_dataset:
+                    msg = "ZFS dataset '%s' already exists." % full_dataset
+                    logging.error(msg)
+                    raise errors.BlockDeviceError(msg)
+                else:
+                    # This case should ideally not happen if 'zfs list <name>' succeeds
+                    # but doesn't output the name. Treat as an unexpected ZFS behavior.
+                    msg = "ZFS dataset check for '%s' succeeded but output did not match. Output: %s" % (
+                        full_dataset, dataset_check_result.stdout
+                    )
+                    logging.error(msg)
+                    raise errors.BlockDeviceError(msg)
+            else:
+                # Command returned a non-zero exit code
+                if "dataset does not exist" not in dataset_check_result.stderr:
+                    # The non-zero code is due to an actual ZFS error, not just "dataset does not exist"
+                    msg = "Failed to check for existing ZFS dataset '%s': stderr: %s, output: %s" % (
+                        full_dataset, dataset_check_result.stderr, dataset_check_result.stdout
+                    )
+                    logging.error(msg)
+                    raise errors.BlockDeviceError(msg)
+                # If "dataset does not exist" is in stderr, that's the expected case, so we do nothing
+                # and proceed to dataset creation.
 
         # Create the ZFS dataset as a volume
         size_bytes = int(size * 1024 * 1024)  # Convert MiB to bytes
@@ -256,22 +277,49 @@ class ZfsBlockDevice(base.BlockDev):
         post_check_result = utils.RunCmd(dataset_check_cmd) # Reuse dataset_check_cmd
 
         if post_check_result.failed:
-            # If RunCmd failed, it's an error regardless of what we wanted to check
-            raise errors.BlockDeviceError(post_check_result.fail_reason)
-
-        if post_check_result.GetReturnCode() == 0 and post_check_result.stdout.strip() == full_dataset:
-            # Dataset still exists after destroy command
-            msg = "ZFS dataset '%s' still exists after destroy operation." % full_dataset
+            # Command execution failed (e.g., zfs command not found)
+            msg = "Failed to execute ZFS dataset check command for '%s' during removal verification: %s" % (
+                full_dataset, post_check_result.fail_reason
+            )
             logging.error(msg)
             raise errors.BlockDeviceError(msg)
-        elif post_check_result.GetReturnCode() != 0 and "dataset does not exist" not in post_check_result.stderr:
-            # An actual error occurred with zfs list, beyond "dataset does not exist"
-            # This is unexpected, as we want it to not exist. Log as warning.
-            # This condition implies post_check_result.failed was false.
-            logging.warning("Verification check for dataset '%s' removal encountered an issue: %s",
-                            full_dataset, post_check_result.stderr)
+        else:
+            # Command executed, now check its outcome
+            if post_check_result.GetReturnCode() == 0 and post_check_result.stdout.strip() == full_dataset:
+                # Dataset still exists after destroy command, this is an error.
+                msg = "ZFS dataset '%s' still exists after destroy operation." % full_dataset
+                logging.error(msg)
+                raise errors.BlockDeviceError(msg)
+            elif post_check_result.GetReturnCode() != 0:
+                # Command returned non-zero. This is expected if dataset is gone.
+                if "dataset does not exist" in post_check_result.stderr:
+                    # This is the success case: dataset is confirmed to be gone.
+                    logging.info("ZFS volume %s successfully verified as removed.", full_dataset)
+                else:
+                    # Non-zero return code, but not because dataset doesn't exist.
+                    # This is an unexpected ZFS error during verification.
+                    logging.warning(
+                        "Verification check for dataset '%s' removal encountered an unexpected ZFS issue: stderr: %s, output: %s",
+                        full_dataset, post_check_result.stderr, post_check_result.stdout
+                    )
+            # else: GetReturnCode() == 0 but stdout does not match full_dataset.
+            # This is also unexpected but means the specific dataset we tried to remove is gone.
+            # For post-removal check, if 'zfs list <name>' returns 0 but not the name, it's effectively gone.
+            # So, we can treat this as success as well for removal verification.
 
-        logging.info("ZFS volume %s removed successfully.", full_dataset)
+        # If we haven't raised an error, removal is considered successful or warning logged.
+        # The primary success path is "dataset does not exist" in stderr.
+        # Other paths are either errors or warnings.
+        # The final "removed successfully" log might need adjustment if we strictly follow only the "dataset does not exist" path.
+        # However, the problem description implies this log is for the overall Remove operation.
+        # Let's ensure the log reflects the outcome properly.
+        # The original structure logged "removed successfully" unless an error was raised.
+        # The new structure raises error on definite failure, logs warning on ambiguous ZFS state.
+        # If no error is raised, it means either it's verified as gone, or an ambiguous state was warned.
+        # The original logic would log "removed successfully" even in the warning case.
+        # This seems acceptable to retain.
+
+        logging.info("ZFS volume %s removed successfully (or verification resulted in a warning for ambiguous state).", full_dataset)
 
 
     def Attach(self, **kwargs):
@@ -498,20 +546,40 @@ class ZfsBlockDevice(base.BlockDev):
         # 2. Check if snapshot already exists
         snap_check_cmd = ["zfs", "list", "-H", "-t", "snapshot", "-o", "name", snap_dataset]
         snap_check_result = utils.RunCmd(snap_check_cmd)
+
         if snap_check_result.failed:
-            raise errors.BlockDeviceError(snap_check_result.fail_reason)
-        if snap_check_result.GetReturnCode() == 0 and snap_check_result.stdout.strip() == snap_dataset:
-            msg = "ZFS snapshot '%s' already exists." % snap_dataset
-            logging.error(msg)
-            raise errors.BlockDeviceError(msg)
-        elif snap_check_result.GetReturnCode() != 0 and "dataset does not exist" not in snap_check_result.stderr:
-            # An actual error occurred with zfs list, not just "dataset does not exist"
-            # This condition implies snap_check_result.failed was false.
-            msg = "Failed to check for existing ZFS snapshot '%s': %s" % (
-                snap_dataset, snap_check_result.stderr
+            # Command execution failed
+            msg = "Failed to execute ZFS snapshot check command for '%s': %s" % (
+                snap_dataset, snap_check_result.fail_reason
             )
             logging.error(msg)
             raise errors.BlockDeviceError(msg)
+        else:
+            # Command executed, check its outcome
+            if snap_check_result.GetReturnCode() == 0:
+                # Command succeeded
+                if snap_check_result.stdout.strip() == snap_dataset:
+                    # Snapshot already exists, this is an error before creation
+                    msg = "ZFS snapshot '%s' already exists." % snap_dataset
+                    logging.error(msg)
+                    raise errors.BlockDeviceError(msg)
+                else:
+                    # Command succeeded but output unexpected.
+                    msg = "ZFS snapshot check for '%s' succeeded but output did not match. Output: %s" % (
+                        snap_dataset, snap_check_result.stdout
+                    )
+                    logging.error(msg)
+                    raise errors.BlockDeviceError(msg) # Treat as an error
+            else:
+                # Command returned non-zero. Expected if snapshot doesn't exist.
+                if "dataset does not exist" not in snap_check_result.stderr:
+                    # Non-zero code, and not because it doesn't exist. This is an unexpected ZFS error.
+                    msg = "Failed to check for existing ZFS snapshot '%s': stderr: %s, output: %s" % (
+                        snap_dataset, snap_check_result.stderr, snap_check_result.stdout
+                    )
+                    logging.error(msg)
+                    raise errors.BlockDeviceError(msg)
+                # Else: "dataset does not exist" is in stderr, so snapshot does not exist. Proceed to creation.
 
         # ZFS snapshot command
         snapshot_cmd = ["zfs", "snapshot", snap_dataset]
@@ -523,20 +591,38 @@ class ZfsBlockDevice(base.BlockDev):
 
         # Post-Snapshot Verification
         verify_snap_result = utils.RunCmd(snap_check_cmd) # Re-use snap_check_cmd
-        if verify_snap_result.failed:
-            # If RunCmd itself failed, raise immediately with fail_reason
-            raise errors.BlockDeviceError(verify_snap_result.fail_reason)
 
-        # If RunCmd succeeded, then check the logical condition (stdout)
-        if verify_snap_result.stdout.strip() != snap_dataset:
-            msg = "Verification failed for ZFS snapshot '%s' after creation: snapshot not found (command output: %s)" % (
-                snap_dataset, verify_snap_result.stdout
+        if verify_snap_result.failed:
+            # Command execution failed
+            msg = "Failed to execute ZFS snapshot verification command for '%s': %s" % (
+                snap_dataset, verify_snap_result.fail_reason
             )
             logging.error(msg)
-            # No cleanup action for failed snapshot creation, as it likely didn't create anything.
             raise errors.BlockDeviceError(msg)
+        else:
+            # Command executed, check its outcome
+            if verify_snap_result.GetReturnCode() == 0 and verify_snap_result.stdout.strip() == snap_dataset:
+                # This is the success case: snapshot exists and name matches.
+                logging.info("ZFS snapshot %s created and verified successfully.", snap_dataset)
+            else:
+                # Verification failed: either command returned non-zero, or output didn't match.
+                msg = "Verification failed for ZFS snapshot '%s' after creation. Command RC: %s, Stderr: %s, Stdout: %s" % (
+                    snap_dataset,
+                    verify_snap_result.GetReturnCode(),
+                    verify_snap_result.stderr,
+                    verify_snap_result.stdout
+                )
+                logging.error(msg)
+                # No cleanup action for failed snapshot creation, as it likely didn't create anything,
+                # or the state is uncertain.
+                raise errors.BlockDeviceError(msg)
 
-        logging.info("ZFS snapshot %s created and verified successfully.", snap_dataset)
+        # Return the snapshot's logical id - for ZFS this is (pool, dataset@snapshot)
+        # This line was after the logging.info in the original code, so keep it at the end of the method.
+        # However, the new structure places the success log inside the 'if' block.
+        # The return should happen only on success.
+        # The original code had the return statement after the successful verification log.
+        # If verification fails, an error is raised, so this return is only hit on success.
         # Return the snapshot's logical id - for ZFS this is (pool, dataset@snapshot)
         return (self.pool_name, "%s@%s" % (self.dataset_name, snap_name))
 
