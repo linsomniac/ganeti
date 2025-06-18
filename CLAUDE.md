@@ -114,7 +114,7 @@ make check-news        # Verify NEWS file format
 
 **Node Communication**: RPC system in rpc/ handles all inter-node communication using JSON over HTTP/SSH.
 
-**Storage Abstraction**: Pluggable storage backends (storage/) support DRBD, LVM, filestorage, Gluster, RBD, etc.
+**Storage Abstraction**: Pluggable storage backends (storage/) support DRBD, LVM, filestorage, Gluster, RBD, ZFS, etc.
 
 **Hypervisor Abstraction**: Clean interface (hypervisor/) allows multiple hypervisor backends.
 
@@ -169,3 +169,82 @@ make check-news        # Verify NEWS file format
 - State: `/var/lib/ganeti/`
 - Logs: `/var/log/ganeti/`
 - Runtime: `/srv/ganeti/` (exports, OS images, external storage)
+
+## ZFS Storage Backend Implementation
+
+ZFS has been implemented as a first-class storage backend in this Ganeti codebase. Key implementation details:
+
+### ZFS Integration Points
+
+**Constants and Configuration**:
+- `src/Ganeti/Constants.hs`: ZFS constants (zfsPool, defaultZfsPool, diskDtDefaults)
+- `lib/_constants.py`: Auto-generated Python constants including ZFS support
+- ZFS disk template: `constants.DT_ZFS = "zfs"`
+
+**Storage Backend Implementation**:
+- `lib/storage/zfs.py`: Main ZFS storage backend class `ZfsBlockDevice`
+- Device path format: `/dev/zvol/<pool>/<dataset>`
+- Logical ID format: `(pool_name, dataset_name)` tuple
+- Supports ZFS dataset creation, destruction, growth, snapshots, and replication
+
+**Integration Layer**:
+- `lib/storage/bdev.py`: ZFS registered in `DEV_MAP` as `constants.DT_ZFS: ZfsBlockDevice`
+- `lib/backend.py`: ZFS space reporting via `_GetZfsPoolSpaceInfo()`
+- `lib/cmdlib/instance_storage.py`: ZFS instance creation logic and disk template handling
+- `lib/objects.py`: ZFS support in Disk class methods (GetNodes, RecordGrow, StaticDevPath)
+
+### ZFS-Specific Features
+
+**Dataset Management**:
+- Creates ZFS volumes (zvols) using `zfs create -V <size> <pool>/<dataset>`
+- Validates ZFS pool and dataset names
+- Handles ZFS properties via disk parameters
+- Automatic pool import if needed during assembly
+
+**Device Availability Handling**:
+- Implements retry mechanism for device availability (up to 30 seconds)
+- Handles delay between ZFS dataset creation and `/dev/zvol/` device appearance
+- Proper attachment state management with `self.attached` flag reset
+
+**Storage Operations**:
+- Volume growth via `zfs set volsize=<new_size>`
+- Snapshot creation via `zfs snapshot <dataset>@<name>`
+- Export/import via `zfs send` and `zfs receive` commands
+- Storage space reporting via `zfs list` command parsing
+
+### Critical Implementation Notes
+
+**Device Path Resolution**:
+- ZFS devices appear as `/dev/zvol/<pool>/<dataset>` 
+- The `Attach()` method includes retry logic for device availability
+- Must reset `self.attached = False` at start of attach operation
+- Device discovery relies on proper `attached` flag state for `FindDevice()` function
+
+**Constants Generation**:
+- Haskell constants in `src/Ganeti/Constants.hs` generate Python constants
+- After modifying Haskell constants, run `make lib/_constants.py` to regenerate
+- ZFS constants include default pool name and disk template defaults
+
+**Common ZFS Issues**:
+- **Timeout during instance creation**: Usually caused by device availability delays
+- **Device path not found**: Check ZFS pool status and dataset existence
+- **Constants not found**: Regenerate Python constants after Haskell changes
+- **Instance startup failures**: Verify `Attach()` method properly sets `attached` flag
+
+### ZFS Testing Commands
+
+```bash
+# Test ZFS pool space reporting
+gnt-node list
+
+# Test ZFS instance creation  
+gnt-instance add -t zfs --disk 0:size=1G -o debootstrap+default test-instance
+
+# Test ZFS device discovery
+# Check /dev/zvol/<pool>/ for created datasets
+
+# Verify ZFS constants are properly generated
+python3 -c "from ganeti import constants; print(constants.DISK_DT_DEFAULTS)"
+```
+
+This ZFS implementation provides full integration with Ganeti's storage abstraction layer, enabling ZFS as a production-ready storage backend for virtual machine disk storage.

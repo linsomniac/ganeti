@@ -113,40 +113,23 @@ class ZfsBlockDevice(base.BlockDev):
         dataset_check_cmd = ["zfs", "list", "-H", "-o", "name", full_dataset]
         dataset_check_result = utils.RunCmd(dataset_check_cmd)
 
-        if dataset_check_result.failed:
-            # This means utils.RunCmd failed, e.g., command not found or other execution error
-            msg = "Failed to execute ZFS dataset check command for '%s': %s" % (
-                full_dataset, dataset_check_result.fail_reason
-            )
-            logging.error(msg)
-            raise errors.BlockDeviceError(msg)
-        else:
-            # Command executed, now check its outcome
-            if dataset_check_result.GetReturnCode() == 0:
-                # Command succeeded, check if stdout indicates dataset exists
-                if dataset_check_result.stdout.strip() == full_dataset:
-                    msg = "ZFS dataset '%s' already exists." % full_dataset
-                    logging.error(msg)
-                    raise errors.BlockDeviceError(msg)
-                else:
-                    # This case should ideally not happen if 'zfs list <name>' succeeds
-                    # but doesn't output the name. Treat as an unexpected ZFS behavior.
-                    msg = "ZFS dataset check for '%s' succeeded but output did not match. Output: %s" % (
-                        full_dataset, dataset_check_result.stdout
-                    )
-                    logging.error(msg)
-                    raise errors.BlockDeviceError(msg)
-            else:
-                # Command returned a non-zero exit code
-                if "dataset does not exist" not in dataset_check_result.stderr:
-                    # The non-zero code is due to an actual ZFS error, not just "dataset does not exist"
-                    msg = "Failed to check for existing ZFS dataset '%s': stderr: %s, output: %s" % (
-                        full_dataset, dataset_check_result.stderr, dataset_check_result.stdout
-                    )
-                    logging.error(msg)
-                    raise errors.BlockDeviceError(msg)
-                # If "dataset does not exist" is in stderr, that's the expected case, so we do nothing
-                # and proceed to dataset creation.
+        import syslog; syslog.syslog(f"{dataset_check_result.failed=}")
+        import syslog; syslog.syslog(f"{dataset_check_result=}")
+        import syslog; syslog.syslog(f"{dataset_check_result.exit_code=}")
+        import syslog; syslog.syslog(f"{dataset_check_result.fail_reason=}")
+        import syslog; syslog.syslog(f"{dataset_check_result.output=}")
+        import syslog; syslog.syslog(f"{dataset_check_result.stdout=}")
+        import syslog; syslog.syslog(f"{dataset_check_result.stderr=}")
+        import syslog; syslog.syslog(f"{dir(dataset_check_result)=}")
+        import syslog; syslog.syslog(f"{dataset_check_result.GetReturnCode()=}")
+        if not dataset_check_result.failed or dataset_check_result.exit_code != 1 or 'dataset does not exist' not in dataset_check_result.stderr:
+            if "dataset does not exist" not in dataset_check_result.stderr:
+                # The non-zero code is due to an actual ZFS error, not just "dataset does not exist"
+                msg = "Failed to check for existing ZFS dataset '%s': stderr: %s, output: %s" % (
+                    full_dataset, dataset_check_result.stderr, dataset_check_result.stdout
+                )
+                logging.error(msg)
+                raise errors.BlockDeviceError(msg)
 
         # Create the ZFS dataset as a volume
         size_bytes = int(size * 1024 * 1024)  # Convert MiB to bytes
