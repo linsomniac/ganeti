@@ -110,6 +110,8 @@ def _GetDefaultStorageUnitForDiskTemplate(cfg, disk_template):
     return (storage_type, cluster.shared_file_storage_dir)
   elif disk_template == constants.DT_GLUSTER:
     return (storage_type, cluster.gluster_storage_dir)
+  elif disk_template == constants.DT_ZFS:
+    return (storage_type, cfg.GetZfsPool())
   else:
     return (storage_type, None)
 
@@ -139,11 +141,16 @@ def GetStorageUnits(cfg, disk_templates):
     name for LVM storage or a file for file storage.
 
   """
+  logging.debug("GetStorageUnits called with disk_templates: %s", disk_templates)
   storage_units = []
   for disk_template in disk_templates:
+    logging.debug("Processing disk template: %s, supports reporting: %s", 
+                  disk_template, DiskTemplateSupportsSpaceReporting(disk_template))
     if DiskTemplateSupportsSpaceReporting(disk_template):
-      storage_units.append(
-          _GetDefaultStorageUnitForDiskTemplate(cfg, disk_template))
+      storage_unit = _GetDefaultStorageUnitForDiskTemplate(cfg, disk_template)
+      logging.debug("Storage unit for %s: %s", disk_template, storage_unit)
+      storage_units.append(storage_unit)
+  logging.debug("Final storage_units: %s", storage_units)
   return storage_units
 
 

@@ -759,6 +759,7 @@ def GetNodeInfo(storage_units, hv_specs):
     information
 
   """
+  logging.debug("GetNodeInfo called with storage_units: %s", storage_units)
   bootid = utils.ReadFile(_BOOT_ID_PATH, size=128).rstrip("\n")
   storage_info = _GetNamedNodeInfo(
     storage_units,
@@ -766,6 +767,7 @@ def GetNodeInfo(storage_units, hv_specs):
         _ApplyStorageInfoFunction(type_key_params[0],
                                   type_key_params[1],
                                   type_key_params[2])))
+  logging.debug("GetNodeInfo storage_info result: %s", storage_info)
   hv_info = _GetHvInfoAll(hv_specs)
   return (bootid, storage_info, hv_info)
 
@@ -867,10 +869,16 @@ def _ApplyStorageInfoFunction(storage_type, storage_key, *args):
   @raises NotImplementedError: for storage types who don't support space
     reporting yet
   """
+  logging.debug("_ApplyStorageInfoFunction called: storage_type=%s, storage_key=%s, args=%s", 
+                storage_type, storage_key, args)
   fn = _STORAGE_TYPE_INFO_FN[storage_type]
   if fn is not None:
-    return fn(storage_key, *args)
+    logging.debug("Found storage function for %s: %s", storage_type, fn.__name__)
+    result = fn(storage_key, *args)
+    logging.debug("Storage function result: %s", result)
+    return result
   else:
+    logging.debug("No storage function found for %s", storage_type)
     raise NotImplementedError
 
 

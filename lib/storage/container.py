@@ -494,7 +494,7 @@ class ZfsPoolStorage(_Base):
     See L{_Base.List}.
 
     """
-    command = ["zpool", "list", "-H", "-o", "name,size,alloc,free"]
+    command = ["zpool", "list", "-Hp", "-o", "name,size,alloc,free"]
     if name is not None:
       command.append(name)
 
@@ -519,14 +519,20 @@ class ZfsPoolStorage(_Base):
 
       pool_name, size_str, alloc_str, free_str = parts[:4]
 
-      # Convert from human readable format (e.g., "10G") to MiB
-      # Note: utils.ParseUnit returns values in MiB, not bytes
+      # Convert from bytes to MiB (since -p flag gives exact bytes)
+      # Ganeti expects storage sizes in MiB
       try:
-        size_mib = utils.ParseUnit(size_str)
-        alloc_mib = utils.ParseUnit(alloc_str)
-        free_mib = utils.ParseUnit(free_str)
-      except (ValueError, errors.UnitParseError):
-        logging.warning("Cannot parse ZFS pool sizes for %s", pool_name)
+        size_bytes = int(size_str)
+        alloc_bytes = int(alloc_str)
+        free_bytes = int(free_str)
+        
+        # Convert bytes to MiB (1 MiB = 1024 * 1024 bytes)
+        size_mib = size_bytes // (1024 * 1024)
+        alloc_mib = alloc_bytes // (1024 * 1024)
+        free_mib = free_bytes // (1024 * 1024)
+      except ValueError:
+        logging.warning("Cannot parse ZFS pool sizes for %s: %s, %s, %s", 
+                        pool_name, size_str, alloc_str, free_str)
         continue
 
       entry = {
