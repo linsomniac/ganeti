@@ -52,6 +52,7 @@ getDefaultStorageKey cfg T.DTDrbd8 = clusterVolumeGroupName $ configCluster cfg
 getDefaultStorageKey cfg T.DTPlain = clusterVolumeGroupName $ configCluster cfg
 getDefaultStorageKey cfg T.DTFile =
     Just (clusterFileStorageDir $ configCluster cfg)
+getDefaultStorageKey cfg T.DTZfs = clusterZfsPoolName $ configCluster cfg
 getDefaultStorageKey _ _ = Nothing
 
 -- | Get the cluster's default spindle storage unit
