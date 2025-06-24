@@ -991,7 +991,7 @@ dtsInstanceDependentPath =
 -- shared between nodes; in particular, sharedfile is not suitable.
 dtsCopyable :: FrozenSet String
 dtsCopyable =
-  ConstantUtils.mkSet $ map Types.diskTemplateToRaw [DTPlain, DTFile]
+  ConstantUtils.mkSet $ map Types.diskTemplateToRaw [DTPlain, DTFile, DTZfs]
 
 -- | The set of disk templates which can be snapshot.
 dtsSnapshotCapable :: FrozenSet String
