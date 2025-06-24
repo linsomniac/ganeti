@@ -943,7 +943,7 @@ dtsExtMirror :: FrozenSet String
 dtsExtMirror =
   ConstantUtils.mkSet $
   map Types.diskTemplateToRaw
-  [DTDiskless, DTBlock, DTExt, DTSharedFile, DTRbd, DTGluster]
+  [DTDiskless, DTBlock, DTExt, DTSharedFile, DTRbd, DTGluster, DTZfs]
 
 -- | The set of non-lvm-based disk templates
 dtsNotLvm :: FrozenSet String
