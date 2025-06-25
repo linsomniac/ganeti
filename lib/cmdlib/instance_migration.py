@@ -687,26 +687,15 @@ class TLMigrateInstance(Tasklet):
         self.feedback_fn("  - sending initial snapshot to target (this may take time)")
         target_host = self.cfg.GetNodeName(self.target_node_uuid)
         
-        # Create the target dataset first
+        # Send the initial snapshot (zfs receive will create the target dataset)
         target_ip = self.nodes_ip[self.target_node_uuid]
-        create_cmd = ["ssh", target_ip, "zfs", "create", "-V", str(int(disk.size * 1024 * 1024)), target_dataset]
-        result = utils.RunCmd(create_cmd)
-        if result.failed and "dataset already exists" not in result.stderr:
-          raise errors.OpExecError("Failed to create target ZFS dataset: %s" % result.stderr)
-        
-        # Send the initial snapshot
-        send_cmd = ["zfs", "send", "%s@%s" % (source_dataset, initial_snap)]
-        receive_cmd = ["ssh", target_ip, "zfs", "receive", "-F", target_dataset]
-        
         # Use pipeline: zfs send | ssh target zfs receive
-        send_proc = process.Popen(send_cmd, stdout=process.PIPE)
-        receive_proc = process.Popen(receive_cmd, stdin=send_proc.stdout)
-        send_proc.stdout.close()
-        receive_proc.wait()
-        send_proc.wait()
+        pipeline_cmd = "zfs send %s@%s | ssh %s 'zfs receive -F %s'" % (
+            source_dataset, initial_snap, target_ip, target_dataset)
+        result = utils.RunCmd(pipeline_cmd)
         
-        if send_proc.returncode != 0 or receive_proc.returncode != 0:
-          raise errors.OpExecError("Failed initial ZFS replication for %s" % source_dataset)
+        if result.failed:
+          raise errors.OpExecError("Failed initial ZFS replication for %s: %s" % (source_dataset, result.stderr))
         
         # Step 3: Take intermediate snapshot and send incremental  
         intermediate_snap = "ganeti-migration-%d-incremental" % int(time.time())
@@ -719,18 +708,14 @@ class TLMigrateInstance(Tasklet):
         
         # Send incremental snapshot
         self.feedback_fn("  - sending incremental changes")
-        send_cmd = ["zfs", "send", "-i", "%s@%s" % (source_dataset, initial_snap),
-                   "%s@%s" % (source_dataset, intermediate_snap)]
-        receive_cmd = ["ssh", target_ip, "zfs", "receive", target_dataset]
+        # Send incremental changes via pipeline
+        pipeline_cmd = "zfs send -i %s@%s %s@%s | ssh %s 'zfs receive %s'" % (
+            source_dataset, initial_snap, source_dataset, intermediate_snap, 
+            target_ip, target_dataset)
+        result = utils.RunCmd(pipeline_cmd)
         
-        send_proc = process.Popen(send_cmd, stdout=process.PIPE)
-        receive_proc = process.Popen(receive_cmd, stdin=send_proc.stdout)
-        send_proc.stdout.close()
-        receive_proc.wait()
-        send_proc.wait()
-        
-        if send_proc.returncode != 0 or receive_proc.returncode != 0:
-          raise errors.OpExecError("Failed incremental ZFS replication for %s" % source_dataset)
+        if result.failed:
+          raise errors.OpExecError("Failed incremental ZFS replication for %s: %s" % (source_dataset, result.stderr))
         
       self.feedback_fn("* ZFS replication preparation complete")
       
@@ -767,18 +752,13 @@ class TLMigrateInstance(Tasklet):
         continue
         
       # Send final incremental
-      send_cmd = ["zfs", "send", "-i", "%s@%s" % (dataset, intermediate_snap),
-                 "%s@%s" % (dataset, final_snap)]
-      receive_cmd = ["ssh", target_ip, "zfs", "receive", dataset]
+      # Send final incremental changes via pipeline
+      pipeline_cmd = "zfs send -i %s@%s %s@%s | ssh %s 'zfs receive %s'" % (
+          dataset, intermediate_snap, dataset, final_snap, target_ip, dataset)
+      result = utils.RunCmd(pipeline_cmd)
       
-      send_proc = process.Popen(send_cmd, stdout=process.PIPE)
-      receive_proc = process.Popen(receive_cmd, stdin=send_proc.stdout)
-      send_proc.stdout.close()
-      receive_proc.wait()
-      send_proc.wait()
-      
-      if send_proc.returncode != 0 or receive_proc.returncode != 0:
-        logging.error("Failed final ZFS sync for %s", dataset)
+      if result.failed:
+        logging.error("Failed final ZFS sync for %s: %s", dataset, result.stderr)
         
       # Cleanup old snapshots, keep final one
       utils.RunCmd(["zfs", "destroy", "%s@%s" % (dataset, intermediate_snap)])
@@ -864,7 +844,11 @@ class TLMigrateInstance(Tasklet):
     disks = self.cfg.GetInstanceDisks(self.instance.uuid)
 
     # TODO: Cleanup code duplication of _RevertDiskStatus()
-    self._CloseInstanceDisks(demoted_node_uuid)
+    # Only close disks for internal mirroring where the demoted node has disks.
+    # For external mirroring, the target node may not have disks if migration failed.
+    if (utils.AnyDiskOfType(disks, constants.DTS_INT_MIRROR) or 
+        demoted_node_uuid == self.source_node_uuid):
+      self._CloseInstanceDisks(demoted_node_uuid)
 
     if utils.AnyDiskOfType(disks, constants.DTS_INT_MIRROR):
       try:
@@ -888,7 +872,10 @@ class TLMigrateInstance(Tasklet):
 
     disks = self.cfg.GetInstanceDisks(self.instance.uuid)
 
-    self._CloseInstanceDisks(self.target_node_uuid)
+    # Only close target disks for internal mirroring where target disks exist.
+    # For external mirroring, target disks may not exist if migration failed early.
+    if utils.AnyDiskOfType(disks, constants.DTS_INT_MIRROR):
+      self._CloseInstanceDisks(self.target_node_uuid)
 
     unmap_types = (constants.DT_RBD, constants.DT_EXT, constants.DT_ZFS)
     if utils.AnyDiskOfType(disks, unmap_types):
@@ -1029,7 +1016,11 @@ class TLMigrateInstance(Tasklet):
 
     disks = self.cfg.GetInstanceDisks(self.instance.uuid)
 
-    self._CloseInstanceDisks(self.target_node_uuid)
+    # Only close target disks for internal mirroring (like DRBD) where
+    # target disks already exist. For external mirroring (like ZFS), 
+    # target disks don't exist yet and will be created during replication.
+    if utils.AnyDiskOfType(disks, constants.DTS_INT_MIRROR):
+      self._CloseInstanceDisks(self.target_node_uuid)
 
     if utils.AnyDiskOfType(disks, constants.DTS_INT_MIRROR):
       # Then switch the disks to master/master mode
