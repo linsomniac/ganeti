@@ -1149,17 +1149,22 @@ class TLMigrateInstance(Tasklet):
     elif utils.AnyDiskOfType(disks, constants.DTS_EXT_MIRROR):
       self._OpenInstanceDisks(self.target_node_uuid, True)
 
-    # If the instance's disk template is `rbd', `ext', or `zfs' and there was a
-    # successful migration, unmap the device from the source node.
-    unmap_types = (constants.DT_RBD, constants.DT_EXT, constants.DT_ZFS)
+    # Handle source storage cleanup after successful migration.
+    # Different storage types need different cleanup approaches:
+    # - RBD/EXT: Only need unmapping (blockdev_shutdown)
+    # - ZFS: Need actual removal (blockdev_remove) to destroy zvols
+    
+    unmap_types = (constants.DT_RBD, constants.DT_EXT)
+    remove_types = (constants.DT_ZFS,)
 
+    # Handle storage types that only need unmapping (RBD, EXT)
     if utils.AnyDiskOfType(disks, unmap_types):
       unmap_disks = [d for d in disks if d.dev_type in unmap_types]
-      disks = ExpandCheckDisks(unmap_disks, unmap_disks)
+      processed_disks = ExpandCheckDisks(unmap_disks, unmap_disks)
       self.feedback_fn("* unmapping instance's disks %s from %s" %
                        (utils.CommaJoin(d.name for d in unmap_disks),
                         self.cfg.GetNodeName(self.source_node_uuid)))
-      for disk in disks:
+      for disk in processed_disks:
         result = self.rpc.call_blockdev_shutdown(self.source_node_uuid,
                                                  (disk, self.instance))
         msg = result.fail_msg
@@ -1169,6 +1174,42 @@ class TLMigrateInstance(Tasklet):
                         disk.iv_name,
                         self.cfg.GetNodeName(self.source_node_uuid), msg)
           logging.error("You need to unmap the device %s manually on %s",
+                        disk.iv_name,
+                        self.cfg.GetNodeName(self.source_node_uuid))
+
+    # Handle storage types that need full removal (ZFS)
+    if utils.AnyDiskOfType(disks, remove_types):
+      remove_disks = [d for d in disks if d.dev_type in remove_types]
+      processed_disks = ExpandCheckDisks(remove_disks, remove_disks)
+      self.feedback_fn("* removing instance's disks %s from %s" %
+                       (utils.CommaJoin(d.name for d in remove_disks),
+                        self.cfg.GetNodeName(self.source_node_uuid)))
+      
+      # Clean up migration snapshots first (if any exist)
+      if hasattr(self, 'zfs_snapshots'):
+        self.feedback_fn("* cleaning up ZFS migration snapshots on source")
+        for dataset, _ in self.zfs_snapshots:
+          # List and destroy any remaining migration snapshots
+          result = utils.RunCmd(["zfs", "list", "-t", "snapshot", "-H", "-o", "name", dataset])
+          if not result.failed:
+            for line in result.stdout.strip().split('\n'):
+              if line and 'ganeti-migration-' in line:
+                snap_result = utils.RunCmd(["zfs", "destroy", line])
+                if snap_result.failed:
+                  logging.error("Failed to cleanup migration snapshot %s: %s", 
+                                line, snap_result.stderr)
+      
+      # Remove the source zvols
+      for disk in processed_disks:
+        result = self.rpc.call_blockdev_remove(self.source_node_uuid,
+                                               (disk, self.instance))
+        msg = result.fail_msg
+        if msg:
+          logging.error("Migration was successful, but couldn't remove the"
+                        " block device %s on source node %s: %s",
+                        disk.iv_name,
+                        self.cfg.GetNodeName(self.source_node_uuid), msg)
+          logging.error("You need to remove the device %s manually on %s",
                         disk.iv_name,
                         self.cfg.GetNodeName(self.source_node_uuid))
 
