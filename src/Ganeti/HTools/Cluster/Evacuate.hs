@@ -289,6 +289,12 @@ nodeEvacInstance opts nl il mode inst@(Instance.Instance
                    failOnSecondaryChange mode dt >>
                    evacOneNodeOnly opts nl il inst gdx avail_nodes
 
+nodeEvacInstance opts nl il mode inst@(Instance.Instance
+                                    {Instance.diskTemplate = dt@DTZfs})
+                 gdx avail_nodes =
+                   failOnSecondaryChange mode dt >>
+                   evacOneNodeOnly opts nl il inst gdx avail_nodes
+
 nodeEvacInstance opts nl il ChangePrimary
                  inst@(Instance.Instance {Instance.diskTemplate = DTDrbd8})
                  _ _ =
