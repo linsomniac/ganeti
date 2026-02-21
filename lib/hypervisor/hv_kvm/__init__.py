@@ -44,6 +44,10 @@ import shlex
 import shutil
 import urllib.request, urllib.error, urllib.parse
 from bitarray import bitarray
+
+from ganeti.hypervisor.hv_kvm.bus_manager import BusAllocatorManager, \
+  BusAllocation, PCIAllocator, SCSIAllocator
+
 try:
   import psutil   # pylint: disable=F0401
   if psutil.version_info < (2, 0, 0):
@@ -257,7 +261,8 @@ def _GenerateDeviceHVInfoStr(hvinfo):
   return hvinfo_str
 
 
-def _GenerateDeviceHVInfo(dev_type, kvm_devid, hv_dev_type, bus_slots):
+def _GenerateDeviceHVInfo(dev_type, kvm_devid, hv_dev_type,
+                          allocation: BusAllocation):
   """Helper function to generate hvinfo of a device (disk, NIC)
 
   hvinfo will hold all necessary info for generating the -device QEMU option.
@@ -274,8 +279,7 @@ def _GenerateDeviceHVInfo(dev_type, kvm_devid, hv_dev_type, bus_slots):
   @param kvm_devid: the id of the device
   @type hv_dev_type: string
   @param hv_dev_type: either disk_type or nic_type hvparam
-  @type bus_slots: dict
-  @param bus_slots: the current slots of the first PCI and SCSI buses
+  @param allocation: device allocation by the BusAllocationManager
 
   @rtype: dict
   @return: dict including all necessary info (driver, id, bus and bus location)
@@ -283,26 +287,14 @@ def _GenerateDeviceHVInfo(dev_type, kvm_devid, hv_dev_type, bus_slots):
 
   """
   driver = _DEVICE_DRIVER[dev_type](hv_dev_type)
-  bus = _DEVICE_BUS[dev_type](hv_dev_type)
-  slots = bus_slots[bus]
-  slot = utils.GetFreeSlot(slots, reserve=True)
 
   hvinfo = {
     "driver": driver,
     "id": kvm_devid,
-    "bus": bus,
     }
 
-  if bus == _PCI_BUS:
-    hvinfo.update({
-      "addr": hex(slot),
-      })
-  elif bus == _SCSI_BUS:
-    hvinfo.update({
-      "channel": 0,
-      "scsi-id": slot,
-      "lun": 0,
-      })
+  # add allocation
+  hvinfo.update(allocation.to_kvm_info())
 
   return hvinfo
 
@@ -516,6 +508,8 @@ class KVMHypervisor(hv_base.BaseHypervisor):
   # If the above constants change without updating _DEFAULT_PCI_RESERVATIONS
   # properly, TestGenerateDeviceHVInfo() will probably break.
   _DEFAULT_PCI_RESERVATIONS = "11111111111100000000000000000000"
+  _DEFAULT_PCI_RESERVED_SLOTS = 12
+  _DEFAULT_PCI_SLOTS = 32
   # The SCSI bus is created on demand or automatically and is empty.
   # For simplicity we decide to use a different target (scsi-id)
   # for each SCSI disk. Here we support 16 SCSI disks which is
@@ -524,6 +518,7 @@ class KVMHypervisor(hv_base.BaseHypervisor):
   # Just for the record, lsi supports up to 7, megasas 64,
   # and virtio-scsi-pci 255.
   _DEFAULT_SCSI_RESERVATIONS = "0000000000000000"
+  _DEFAULT_SCSI_SLOTS = 16
 
   ANCILLARY_FILES = [
     _KVM_NETWORK_SCRIPT,
@@ -973,15 +968,25 @@ class KVMHypervisor(hv_base.BaseHypervisor):
     times = 0
 
     try:
-      qmp = QmpConnection(self._InstanceQmpMonitor(instance_name))
+      socket_path = self._InstanceQmpMonitor(instance_name)
+      qmp = QmpConnection(socket_path)
       qmp.connect()
       vcpus = len(qmp.execute_qmp("query-cpus-fast"))
       # Will fail if ballooning is not enabled, but we can then just resort to
       # the value above.
       mem_bytes = qmp.execute_qmp("query-balloon")[qmp.ACTUAL_KEY]
       memory = mem_bytes // 1048576
+      qmp.close()
     except errors.HypervisorError:
       pass
+    # during instance shutdown it may happen, that qemu has already exited
+    # in the middle of talking to it via QMP
+    except BrokenPipeError:
+      logging.debug("Error: Broken pipe. The QMP socket %s has shut down." %
+                    socket_path)
+    except ConnectionError:
+      logging.debug("Error: Unable to connect to the QMP socket %s." %
+                    socket_path)
 
     return (instance_name, pid, memory, vcpus, istat, times)
 
@@ -1074,10 +1079,6 @@ class KVMHypervisor(hv_base.BaseHypervisor):
       if cfdev.mode != constants.DISK_RDWR:
         raise errors.HypervisorError("Instance has read-only disks which"
                                      " are not supported by KVM")
-      # TODO: handle FD_LOOP and FD_BLKTAP (?)
-      if boot_disk:
-        dev_opts.extend(["-boot", "order=c"])
-        boot_disk = False
 
       drive_uri = _GetDriveURI(cfdev, link_name, uri)
 
@@ -1089,21 +1090,30 @@ class KVMHypervisor(hv_base.BaseHypervisor):
       blockdevice = self._GenerateKVMBlockDevice(drive_uri, cfdev, up_hvp,
                                                  kvm_devid)
 
+      dev_val = ""
+
       if disk_type == constants.HT_DISK_IDE:
-        dev_opts.extend(["-device", "ide-hd,drive=%s,write-cache=%s" %
-                         (kvm_devid,
-                          kvm_utils.TranslateBoolToOnOff(writeback))])
+        dev_val += "ide-hd,drive={},write-cache={}".format(
+          kvm_devid, kvm_utils.TranslateBoolToOnOff(writeback)
+        )
       else:
         # hvinfo will exist for paravirtual devices either due to
         # _UpgradeSerializedRuntime() for old instances or due to
         # _GenerateKVMRuntime() for new instances.
 
         # Add driver, id, bus, and addr or channel, scsi-id, lun if any.
-        dev_val = _GenerateDeviceHVInfoStr(cfdev.hvinfo)
-        dev_val += ",drive=%s,write-cache=%s" % (kvm_devid,
-                                                 kvm_utils.TranslateBoolToOnOff(
-                                                   writeback))
-        dev_opts.extend(["-device", dev_val])
+        dev_val += _GenerateDeviceHVInfoStr(cfdev.hvinfo)
+        dev_val += ",drive={},write-cache={}".format(
+          kvm_devid, kvm_utils.TranslateBoolToOnOff(writeback)
+        )
+
+      # TODO: handle FD_LOOP and FD_BLKTAP
+      # add bootindex property to the first disk if disk boot is enabled
+      if boot_disk:
+        dev_val += ",bootindex=1"
+        boot_disk = False
+
+      dev_opts.extend(["-device", dev_val])
 
       # QEMU 4.0 introduced dynamic auto-read-only for file-backed drives. This
       # is unhandled in Ganeti and breaks live migration with
@@ -1133,9 +1143,6 @@ class KVMHypervisor(hv_base.BaseHypervisor):
     @param boot_floppy: set boot device to floppy
 
     """
-    if boot_floppy:
-      kvm_cmd.extend(["-boot", "a"])
-
     bdev_opts = [
       "driver=raw",
       "node-name=floppy1",
@@ -1147,6 +1154,9 @@ class KVMHypervisor(hv_base.BaseHypervisor):
       "floppy",
       "drive=floppy1"
     ]
+
+    if boot_floppy:
+      dev_opts.append("bootindex=1")
 
     kvm_cmd.extend(["-blockdev", ",".join(bdev_opts),
                     "-device",   ",".join(dev_opts)])
@@ -1209,7 +1219,7 @@ class KVMHypervisor(hv_base.BaseHypervisor):
     dev_opts.append("drive=%s" % cdrom_id)
     # set boot flag, if needed
     if cdrom_boot:
-      kvm_cmd.extend(["-boot", "order=d"])
+      dev_opts.append("bootindex=1")
 
     # build '-drive' option
     kvm_cmd.extend(["-blockdev", ",".join(bdev_opts),
@@ -1252,7 +1262,7 @@ class KVMHypervisor(hv_base.BaseHypervisor):
 
     kvm_cmd.extend(["-pidfile", pidfile])
 
-    bus_slots = self._GetBusSlots(hvp)
+    bus_manager = self._get_bus_manager(hvp)
 
     if hvp[constants.HV_DISK_TYPE] in constants.HT_SCSI_DEVICE_TYPES \
             or hvp[constants.HV_KVM_CDROM_DISK_TYPE]\
@@ -1296,17 +1306,13 @@ class KVMHypervisor(hv_base.BaseHypervisor):
 
     kernel_path = hvp[constants.HV_KERNEL_PATH]
     if kernel_path:
-      boot_cdrom = boot_floppy = boot_network = False
+      boot_cdrom = boot_floppy = False
     else:
       boot_cdrom = hvp[constants.HV_BOOT_ORDER] == constants.HT_BO_CDROM
       boot_floppy = hvp[constants.HV_BOOT_ORDER] == constants.HT_BO_FLOPPY
-      boot_network = hvp[constants.HV_BOOT_ORDER] == constants.HT_BO_NETWORK
 
     if startup_paused:
       kvm_cmd.extend([_KVM_START_PAUSED_FLAG])
-
-    if boot_network:
-      kvm_cmd.extend(["-boot", "order=n"])
 
     disk_type = hvp[constants.HV_DISK_TYPE]
 
@@ -1578,21 +1584,23 @@ class KVMHypervisor(hv_base.BaseHypervisor):
         shlex.split(hvp[constants.HV_KVM_EXTRA])
       )
 
-    def _generate_kvm_device(dev_type, dev):
+    def _generate_kvm_device(dev_type, dev, bus_manager: BusAllocatorManager):
       """Helper for generating a kvm device out of a Ganeti device."""
       kvm_devid = _GenerateDeviceKVMId(dev_type, dev)
       hv_dev_type = _DEVICE_TYPE[dev_type](hvp)
+      allocation = bus_manager.get_next_allocation(dev_type, hv_dev_type)
       dev.hvinfo = _GenerateDeviceHVInfo(dev_type, kvm_devid,
-                                         hv_dev_type, bus_slots)
+                                         hv_dev_type, allocation)
+      bus_manager.commit(allocation)
 
     kvm_disks = []
     for disk, link_name, uri in block_devices:
-      _generate_kvm_device(constants.HOTPLUG_TARGET_DISK, disk)
+      _generate_kvm_device(constants.HOTPLUG_TARGET_DISK, disk, bus_manager)
       kvm_disks.append((disk, link_name, uri))
 
     kvm_nics = []
     for nic in instance.nics:
-      _generate_kvm_device(constants.HOTPLUG_TARGET_NIC, nic)
+      _generate_kvm_device(constants.HOTPLUG_TARGET_NIC, nic, bus_manager)
       kvm_nics.append(nic)
 
     hvparams = hvp
@@ -1818,6 +1826,14 @@ class KVMHypervisor(hv_base.BaseHypervisor):
     tapfds = []
     taps = []
     devlist = self._GetKVMOutput(kvm_path, self._KVMOPT_DEVICELIST)
+
+    kernel_path = up_hvp[constants.HV_KERNEL_PATH]
+    if kernel_path:
+      boot_network = False
+    else:
+      boot_network = (up_hvp.get(constants.HV_BOOT_ORDER, '') ==
+                      constants.HT_BO_NETWORK)
+
     if not kvm_nics:
       kvm_cmd.extend(["-net", "none"])
     else:
@@ -1843,6 +1859,8 @@ class KVMHypervisor(hv_base.BaseHypervisor):
           vhostfd = ""
 
         if kvm_supports_netdev:
+          dev_opts = []
+
           # Non paravirtual NICs hvinfo is empty
           if "id" in nic.hvinfo:
             nic_val = _GenerateDeviceHVInfoStr(nic.hvinfo)
@@ -1850,10 +1868,18 @@ class KVMHypervisor(hv_base.BaseHypervisor):
           else:
             nic_val = "%s" % nic_model
             netdev = "netdev%d" % nic_seq
+
           nic_val += (",netdev=%s,mac=%s%s" % (netdev, nic.mac, nic_extra))
           tap_val = ("type=tap,id=%s,%s%s%s" %
                      (netdev, tapfd, vhostfd, tap_extra))
-          kvm_cmd.extend(["-netdev", tap_val, "-device", nic_val])
+          dev_opts.append(nic_val)
+
+          # add bootindex property to the first nic if network boot is enabled
+          if boot_network:
+            dev_opts.append("bootindex=1")
+            boot_network = False
+
+          kvm_cmd.extend(["-netdev", tap_val, "-device", ','.join(dev_opts)])
         else:
           nic_val = "nic,vlan=%s,macaddr=%s,model=%s" % (nic_seq,
                                                          nic.mac, nic_model)
@@ -2089,6 +2115,32 @@ class KVMHypervisor(hv_base.BaseHypervisor):
     if version < (1, 7, 0):
       raise errors.HotplugError("Hotplug not supported for qemu versions < 1.7")
 
+  def _get_bus_manager(self, hvp=None, runtime: KVMRuntime=None) -> (
+          BusAllocatorManager):
+    """
+    Helper function to get the bus manager.
+    """
+
+    scsi_allocator = SCSIAllocator(max_slots=self._DEFAULT_SCSI_SLOTS,
+                                   reserved_slots=0)
+
+    reserved_pci_slots = self._DEFAULT_PCI_RESERVED_SLOTS
+    if hvp and constants.HV_KVM_PCI_RESERVATIONS in hvp:
+      reserved_pci_slots = hvp[constants.HV_KVM_PCI_RESERVATIONS]
+
+    pci_allocator = PCIAllocator(max_slots=constants.QEMU_PCI_SLOTS,
+                                 reserved_slots=reserved_pci_slots)
+
+    # during hot-add
+    if runtime:
+      nics = runtime.kvm_nics
+      disks = [d for d, _, _ in runtime.kvm_disks]
+      dev_infos = [info.hvinfo for info in (disks + nics)]
+      pci_allocator.initialize_from_device_info(dev_infos)
+      scsi_allocator.initialize_from_device_info(dev_infos)
+
+    return BusAllocatorManager([pci_allocator, scsi_allocator])
+
   def _GetBusSlots(self, hvp=None, runtime: KVMRuntime=None):
     """Helper function to get the slots of PCI and SCSI QEMU buses.
 
@@ -2181,11 +2233,13 @@ class KVMHypervisor(hv_base.BaseHypervisor):
     runtime = self._LoadKVMRuntime(instance)
     up_hvp = runtime[2]
     device_type = _DEVICE_TYPE[dev_type](up_hvp)
-    bus_state = self._GetBusSlots(up_hvp, runtime)
+    bus_manager = self._get_bus_manager(up_hvp, runtime)
+    allocation = bus_manager.get_next_allocation(dev_type=dev_type,
+                                                 hv_dev_type=device_type)
     # in case of hot-mod this is given
     if not device.hvinfo:
       device.hvinfo = _GenerateDeviceHVInfo(dev_type, kvm_devid,
-                                            device_type, bus_state)
+                                            device_type, allocation)
 
     new_runtime_entry = _RUNTIME_ENTRY[dev_type](device, extra)
     if dev_type == constants.HOTPLUG_TARGET_DISK:
@@ -2215,6 +2269,9 @@ class KVMHypervisor(hv_base.BaseHypervisor):
       utils.WriteFile(self._InstanceNICFile(instance.name, seq), data=tap)
 
     self._VerifyHotplugCommand(instance, kvm_devid, True)
+    # commit the allocation if hotplug was successful
+    bus_manager.commit(allocation)
+
     # update relevant entries in runtime file
     index = _DEVICE_RUNTIME_INDEX[dev_type]
     runtime[index].append(new_runtime_entry)

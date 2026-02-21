@@ -907,8 +907,8 @@ class RADOSBlockDevice(base.BlockDev):
     rbd_name = unique_id[1]
 
     # Provision a new rbd volume (Image) inside the RADOS cluster.
-    cmd = [constants.RBD_CMD, "create", "-p", rbd_pool,
-           rbd_name, "--size", "%s" % size]
+    cmd = cls.MakeRbdCmd(params, ["create", "-p", rbd_pool, rbd_name,
+                                  "--size", str(size)])
     result = utils.RunCmd(cmd)
     if result.failed:
       base.ThrowError("rbd creation failed (%s): %s",
@@ -932,7 +932,8 @@ class RADOSBlockDevice(base.BlockDev):
     self.Shutdown()
 
     # Remove the actual Volume (Image) from the RADOS cluster.
-    cmd = [constants.RBD_CMD, "rm", "-p", rbd_pool, rbd_name]
+    cmd = self.__class__.MakeRbdCmd(self.params, ["rm", "-p", rbd_pool,
+                                                  rbd_name])
     result = utils.RunCmd(cmd)
     if result.failed:
       base.ThrowError("Can't remove Volume from cluster with rbd rm: %s - %s",
@@ -972,6 +973,15 @@ class RADOSBlockDevice(base.BlockDev):
 
     return True
 
+  @classmethod
+  def MakeRbdCmd(cls, params, cmd):
+    """Add user id option to rbd command if configured.
+    """
+    if params.get(constants.RBD_USER_ID, ""):
+      cmd.extend(["--id", str(params[constants.RBD_USER_ID])])
+
+    return [constants.RBD_CMD] + cmd
+
   def _MapVolumeToBlockdev(self, unique_id):
     """Maps existing rbd volumes to block devices.
 
@@ -991,7 +1001,7 @@ class RADOSBlockDevice(base.BlockDev):
       return rbd_dev
 
     # The mapping doesn't exist. Create it.
-    map_cmd = [constants.RBD_CMD, "map", "-p", pool, name]
+    map_cmd = self.__class__.MakeRbdCmd(self.params, ["map", "-p", pool, name])
     result = utils.RunCmd(map_cmd)
     if result.failed:
       base.ThrowError("rbd map failed (%s): %s",
@@ -1021,12 +1031,7 @@ class RADOSBlockDevice(base.BlockDev):
     try:
       # Newer versions of the rbd tool support json output formatting. Use it
       # if available.
-      showmap_cmd = [
-        constants.RBD_CMD,
-        "showmapped",
-        "--format",
-        "json"
-        ]
+      showmap_cmd = cls.MakeRbdCmd({}, ["showmapped", "--format", "json"])
       result = utils.RunCmd(showmap_cmd)
       if result.failed:
         logging.error("rbd JSON output formatting returned error (%s): %s,"
@@ -1038,7 +1043,7 @@ class RADOSBlockDevice(base.BlockDev):
     except RbdShowmappedJsonError:
       # For older versions of rbd, we have to parse the plain / text output
       # manually.
-      showmap_cmd = [constants.RBD_CMD, "showmapped", "-p", pool]
+      showmap_cmd = cls.MakeRbdCmd({}, ["showmapped", "-p", pool])
       result = utils.RunCmd(showmap_cmd)
       if result.failed:
         base.ThrowError("rbd showmapped failed (%s): %s",
@@ -1180,7 +1185,8 @@ class RADOSBlockDevice(base.BlockDev):
 
     if rbd_dev:
       # The mapping exists. Unmap the rbd device.
-      unmap_cmd = [constants.RBD_CMD, "unmap", "%s" % rbd_dev]
+      unmap_cmd = self.__class__.MakeRbdCmd(self.params, ["unmap",
+                                                          str(rbd_dev)])
       result = utils.RunCmd(unmap_cmd)
       if result.failed:
         base.ThrowError("rbd unmap failed (%s): %s",
@@ -1224,8 +1230,9 @@ class RADOSBlockDevice(base.BlockDev):
     new_size = self.size + amount
 
     # Resize the rbd volume (Image) inside the RADOS cluster.
-    cmd = [constants.RBD_CMD, "resize", "-p", rbd_pool,
-           rbd_name, "--size", "%s" % new_size]
+    cmd = self.__class__.MakeRbdCmd(self.params, ["resize", "-p", rbd_pool,
+                                                  rbd_name, "--size",
+                                                  "%s" % new_size])
     result = utils.RunCmd(cmd)
     if result.failed:
       base.ThrowError("rbd resize failed (%s): %s",
@@ -1260,16 +1267,16 @@ class RADOSBlockDevice(base.BlockDev):
     self._UnmapVolumeFromBlockdev(self.unique_id)
 
     # Remove the actual Volume (Image) from the RADOS cluster.
-    cmd = [constants.RBD_CMD, "rm", "-p", rbd_pool, rbd_name]
+    cmd = self.__class__.MakeRbdCmd(self.params, ["rm", "-p", rbd_pool,
+                                                  rbd_name])
     result = utils.RunCmd(cmd)
     if result.failed:
       base.ThrowError("Can't remove Volume from cluster with rbd rm: %s - %s",
                       result.fail_reason, result.output)
 
     # We use "-" for importing from stdin
-    return [constants.RBD_CMD, "import",
-            "-p", rbd_pool,
-            "-", rbd_name]
+    return self.__class__.MakeRbdCmd(self.params, ["import", "-p", rbd_pool,
+                                                   "-", rbd_name])
 
   def Export(self):
     """Builds the shell command for exporting data from device.
@@ -1285,9 +1292,8 @@ class RADOSBlockDevice(base.BlockDev):
     rbd_name = self.unique_id[1]
 
     # We use "-" for exporting to stdout.
-    return [constants.RBD_CMD, "export",
-            "-p", rbd_pool,
-            rbd_name, "-"]
+    return self.__class__.MakeRbdCmd(self.params, ["export", "-p", rbd_pool,
+                                                   rbd_name, "-"])
 
   def GetUserspaceAccessUri(self, hypervisor):
     """Generate KVM userspace URIs to be used as `-drive file` settings.
@@ -1296,7 +1302,10 @@ class RADOSBlockDevice(base.BlockDev):
 
     """
     if hypervisor == constants.HT_KVM:
-      return "rbd:" + self.rbd_pool + "/" + self.rbd_name
+      uri = "rbd:" + self.rbd_pool + "/" + self.rbd_name
+      if self.params.get(constants.RBD_USER_ID, ""):
+        uri += ":id=%s" % self.params[constants.RBD_USER_ID]
+      return uri
     else:
       base.ThrowError("Hypervisor %s doesn't support RBD userspace access" %
                       hypervisor)

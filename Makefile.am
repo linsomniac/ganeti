@@ -32,7 +32,7 @@ EXTRA_DIST=
 SHELLTESTARGS = "-c"
 
 # Use C.UTF-8 for tests/checks when available, fall back to en_US.UTF-8 else
-UTF8_LOCALE := $(shell locale -a | grep -m 1 -xF "C.UTF-8" || echo "en_US.UTF-8")
+UTF8_LOCALE := $(shell locale -a | grep -m 1 -xF -e C.UTF-8 -e C.utf8 || echo en_US.UTF-8)
 
 ACLOCAL_AMFLAGS = -I autotools
 BUILD_BASH_COMPLETION = $(top_srcdir)/autotools/build-bash-completion
@@ -407,6 +407,10 @@ DIRCHECK_EXCLUDE = \
 	tools/shebang \
 	autom4te.cache \
 	.devcontainer \
+	.idea \
+	.idea/* \
+	.vscode \
+	.vscode/* \
 	.github \
 	.github/workflows
 
@@ -667,7 +671,8 @@ hypervisor_hv_kvm_PYTHON = \
 	lib/hypervisor/hv_kvm/netdev.py \
 	lib/hypervisor/hv_kvm/validation.py \
 	lib/hypervisor/hv_kvm/kvm_utils.py \
-	lib/hypervisor/hv_kvm/kvm_runtime.py
+	lib/hypervisor/hv_kvm/kvm_runtime.py \
+	lib/hypervisor/hv_kvm/bus_manager.py
 
 jqueue_PYTHON = \
 	lib/jqueue/__init__.py \
@@ -749,6 +754,7 @@ pytools_PYTHON = \
 utils_PYTHON = \
 	lib/utils/__init__.py \
 	lib/utils/algo.py \
+	lib/utils/bitarray_compat.py \
 	lib/utils/filelock.py \
 	lib/utils/hash.py \
 	lib/utils/io.py \
@@ -2026,7 +2032,8 @@ python_tests_legacy = \
 	test/py/legacy/tempfile_fork_unittest.py
 
 python_tests_unit = \
-	test/py/unit/hypervisor/hv_kvm/test_monitor.py
+	test/py/unit/hypervisor/hv_kvm/test_monitor.py \
+	test/py/unit/hypervisor/hv_kvm/test_bus_manager.py
 
 python_tests = $(python_tests_integration) $(python_tests_legacy) $(python_tests_unit)
 

@@ -50,7 +50,7 @@ import qualified Data.ByteString.Char8 as BC
 import Data.List ((\\))
 import Data.Map (Map)
 import qualified Data.Map as Map (empty, fromList, keys, insert)
-import Data.Monoid
+import Data.Monoid ((<>))
 
 import qualified AutoConf
 import Ganeti.ConstantUtils (FrozenSet, Protocol(..), buildVersion)
@@ -1413,6 +1413,14 @@ rpcTmo_1day = Types.rpcTimeoutToRaw OneDay
 rpcConnectTimeout :: Int
 rpcConnectTimeout = 5
 
+-- | Maximum number of simultaneous outbound RPC connections from the
+-- master. Limits concurrent TLS handshakes when fanning out to many
+-- nodes, preventing connect timeouts due to CPU and network contention.
+-- Libcurl queues excess connections internally and starts them as
+-- running ones complete.
+rpcMaxConcurrentConnections :: Int
+rpcMaxConcurrentConnections = 30
+
 -- OS
 
 osScriptCreate :: String
@@ -2305,6 +2313,9 @@ ldpPlanAhead = "c-plan-ahead"
 ldpPool :: String
 ldpPool = "pool"
 
+ldpUserId :: String
+ldpUserId = "user-id"
+
 ldpProtocol :: String
 ldpProtocol = "protocol"
 
@@ -2332,7 +2343,8 @@ diskLdTypes =
    (ldpDelayTarget, VTypeInt),
    (ldpMaxRate, VTypeInt),
    (ldpMinRate, VTypeInt),
-   (ldpPool, VTypeString)]
+   (ldpPool, VTypeString),
+   (ldpUserId, VTypeString)]
 
 diskLdParameters :: FrozenSet String
 diskLdParameters = ConstantUtils.mkSet (Map.keys diskLdTypes)
@@ -2399,6 +2411,9 @@ rbdPool = "pool"
 zfsPool :: String
 zfsPool = "pool"
 
+rbdUserId :: String
+rbdUserId = "user-id"
+
 diskDtTypes :: Map String VType
 diskDtTypes =
   Map.fromList [(drbdResyncRate, VTypeInt),
@@ -2419,6 +2434,7 @@ diskDtTypes =
                 (lvStripes, VTypeInt),
                 (rbdAccess, VTypeString),
                 (rbdPool, VTypeString),
+                (rbdUserId, VTypeString),
                 (glusterHost, VTypeString),
                 (glusterVolume, VTypeString),
                 (glusterPort, VTypeInt),
@@ -4239,6 +4255,9 @@ defaultRbdPool = "rbd"
 defaultZfsPool :: String
 defaultZfsPool = "tank"
 
+defaultRbdUserId :: String
+defaultRbdUserId = ""
+
 diskLdDefaults :: Map DiskTemplate (Map String PyValueEx)
 diskLdDefaults =
   Map.fromList
@@ -4266,6 +4285,7 @@ diskLdDefaults =
   , (DTRbd, Map.fromList
             [ (ldpPool, PyValueEx defaultRbdPool)
             , (ldpAccess, PyValueEx diskKernelspace)
+            , (ldpUserId, PyValueEx defaultRbdUserId)
             ])
   , (DTSharedFile, Map.empty)
   , (DTGluster, Map.fromList
@@ -4309,6 +4329,7 @@ diskDtDefaults =
   , (DTRbd,        Map.fromList
                    [ (rbdPool, PyValueEx defaultRbdPool)
                    , (rbdAccess, PyValueEx diskKernelspace)
+                   , (rbdUserId, PyValueEx defaultRbdUserId)
                    ])
   , (DTSharedFile, Map.empty)
   , (DTGluster, Map.fromList

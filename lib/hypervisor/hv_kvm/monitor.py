@@ -175,7 +175,8 @@ def _ensure_connection(fn):
     """Ensure proper connect/close and exception propagation"""
     mon = args[0]
     already_connected = mon.is_connected()
-    mon.connect()
+    if not already_connected:
+      mon.connect()
     try:
       ret = fn(*args, **kwargs)
     finally:
@@ -209,6 +210,7 @@ class UnixFileSocketConnection:
       self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
       self.sock.settimeout(self.timeout)
       self.sock.connect(self.socket_path)
+      self._connected = True
 
       logging.debug("Create Socket Connection to %s.", {self.socket_path})
 
@@ -416,7 +418,7 @@ class QmpConnection(QemuMonitorSocket):
       if greeting[self._EVENT_KEY]:
         continue
       if not greeting[self._FIRST_MESSAGE_KEY]:
-        self._connected = False
+        self.close()
         raise errors.HypervisorError("kvm: QMP communication error (wrong"
                                      " server greeting)")
       else:
@@ -514,7 +516,7 @@ class QmpConnection(QemuMonitorSocket):
     arguments.update(self._filter_hvinfo(nic.hvinfo))
     if enable_mq:
       arguments.update({
-        "mq": "on",
+        "mq": True,
         "vectors": (2 * virtio_net_queues + 2),
         })
     self.execute_qmp("device_add", arguments)
