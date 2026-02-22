@@ -2322,13 +2322,15 @@ Manages storage units on the node.
 
    constants.STS_REPORT == set([constants.ST_FILE,
                                 constants.ST_LVM_PV,
-                                constants.ST_LVM_VG])
+                                constants.ST_LVM_VG,
+                                constants.ST_ZFS])
 
 Requests a list of storage units on a node. Requires the parameters
 ``storage_type`` for storage types that support space reporting
-(one of :pyeval:`constants.ST_FILE`, :pyeval:`constants.ST_LVM_PV`
-or :pyeval:`constants.ST_LVM_VG`) and ``output_fields``. The result
-will be a job id, using which the result can be retrieved.
+(one of :pyeval:`constants.ST_FILE`, :pyeval:`constants.ST_LVM_PV`,
+:pyeval:`constants.ST_LVM_VG` or :pyeval:`constants.ST_ZFS`) and
+``output_fields``. The result will be a job id, using which the result
+can be retrieved.
 
 
 .. _rapi-res-nodes-node_name-storage-modify:
