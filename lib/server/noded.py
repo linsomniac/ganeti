@@ -386,6 +386,25 @@ class NodeRequestHandler(http.server.HttpServerHandler):
     return backend.BlockdevSnapshot(cfbd, snap_name, snap_size)
 
   @staticmethod
+  def perspective_blockdev_zfs_replicate(params):
+    """Create a ZFS snapshot and send it to a remote node.
+
+    """
+    (disk, snap_name, target_node, incremental_base) = params
+    cfbd = objects.Disk.FromDict(disk)
+    return backend.BlockdevZfsReplicate(cfbd, snap_name, target_node,
+                                        incremental_base)
+
+  @staticmethod
+  def perspective_blockdev_zfs_cleanup_snapshots(params):
+    """Destroy ZFS migration snapshots on a disk.
+
+    """
+    (disk, snap_names) = params
+    cfbd = objects.Disk.FromDict(disk)
+    return backend.BlockdevZfsCleanupSnapshots(cfbd, snap_names)
+
+  @staticmethod
   def perspective_blockdev_grow(params):
     """Grow a stack of devices.
 

@@ -639,129 +639,130 @@ class TLMigrateInstance(Tasklet):
   def _ZfsReplicateDisks(self):
     """Handle ZFS replication for live migration.
 
-    This method performs the ZFS send/receive operations needed for 
+    This method performs the ZFS send/receive operations needed for
     live migration with minimal downtime:
-    1. Take initial snapshot on source
-    2. Send initial snapshot to target (while VM runs)
-    3. Take intermediate snapshot and send incremental (while VM runs)
-    4. Pause VM, take final snapshot and send final incremental
-    5. Resume VM on target
+    1. Take initial snapshot on source and send to target (while VM runs)
+    2. Take incremental snapshot and send incremental (while VM runs)
+    3. Final sync happens later in _ZfsFinalSync() during instance pause
+
+    All ZFS commands run on the source node via RPC, not on the master.
     """
+    # AIDEV-NOTE: All ZFS snapshot/send operations must run on the source
+    # node via RPC. Running them locally on the master was the root cause
+    # of the "Can't find device" migration failure.
     disks = self.cfg.GetInstanceDisks(self.instance.uuid)
     zfs_disks = [d for d in disks if d.dev_type == constants.DT_ZFS]
-    
+
     if not zfs_disks:
       return
 
     self.feedback_fn("* preparing ZFS replication for %d disks" % len(zfs_disks))
-    
-    # Import the ZFS module
-    from ganeti.storage.zfs import ZfsBlockDevice
-    
-    # Track snapshots for cleanup
-    snapshots = []
-    
+    snapshots = []  # Track (disk, snap_name) for cleanup
+    source_node = self.source_node_uuid
+    target_node = self.cfg.GetNodeName(self.target_node_uuid)
+
     try:
       for disk in zfs_disks:
         pool_name, dataset_name = disk.logical_id
-        source_dataset = "%s/%s" % (pool_name, dataset_name) 
-        target_dataset = source_dataset  # Same dataset name on target
-        
-        # Create source ZFS device object to handle operations
-        zfs_dev = ZfsBlockDevice(disk.logical_id, disk.children, disk.size, 
-                                disk.params, disk.dynamic_params)
-        
+        source_dataset = "%s/%s" % (pool_name, dataset_name)
+
         self.feedback_fn("* replicating ZFS dataset %s" % source_dataset)
-        
-        # Step 1: Take initial snapshot
-        import time
+
+        # Step 1: Initial snapshot + send (via RPC on source node)
         initial_snap = "ganeti-migration-%d-initial" % int(time.time())
-        self.feedback_fn("  - creating initial snapshot %s" % initial_snap)
-        
-        result = utils.RunCmd(["zfs", "snapshot", "%s@%s" % (source_dataset, initial_snap)])
-        if result.failed:
-          raise errors.OpExecError("Failed to create initial ZFS snapshot: %s" % result.stderr)
-        snapshots.append((source_dataset, initial_snap))
-        
-        # Step 2: Send initial snapshot to target
-        self.feedback_fn("  - sending initial snapshot to target (this may take time)")
-        target_host = self.cfg.GetNodeName(self.target_node_uuid)
-        
-        # Send the initial snapshot (zfs receive will create the target dataset)
-        target_ip = self.nodes_ip[self.target_node_uuid]
-        # Use pipeline: zfs send | ssh target zfs receive
-        pipeline_cmd = "zfs send %s@%s | ssh %s 'zfs receive -F %s'" % (
-            source_dataset, initial_snap, target_ip, target_dataset)
-        result = utils.RunCmd(pipeline_cmd)
-        
-        if result.failed:
-          raise errors.OpExecError("Failed initial ZFS replication for %s: %s" % (source_dataset, result.stderr))
-        
-        # Step 3: Take intermediate snapshot and send incremental  
-        intermediate_snap = "ganeti-migration-%d-incremental" % int(time.time())
-        self.feedback_fn("  - creating incremental snapshot %s" % intermediate_snap)
-        
-        result = utils.RunCmd(["zfs", "snapshot", "%s@%s" % (source_dataset, intermediate_snap)])
-        if result.failed:
-          raise errors.OpExecError("Failed to create incremental ZFS snapshot: %s" % result.stderr)
-        snapshots.append((source_dataset, intermediate_snap))
-        
-        # Send incremental snapshot
-        self.feedback_fn("  - sending incremental changes")
-        # Send incremental changes via pipeline
-        pipeline_cmd = "zfs send -i %s@%s %s@%s | ssh %s 'zfs receive %s'" % (
-            source_dataset, initial_snap, source_dataset, intermediate_snap, 
-            target_ip, target_dataset)
-        result = utils.RunCmd(pipeline_cmd)
-        
-        if result.failed:
-          raise errors.OpExecError("Failed incremental ZFS replication for %s: %s" % (source_dataset, result.stderr))
-        
+        self.feedback_fn("  - creating and sending initial snapshot %s"
+                         % initial_snap)
+
+        result = self.rpc.call_blockdev_zfs_replicate(
+            source_node, (disk, self.instance),
+            initial_snap, target_node, None)
+        result.Raise("Failed initial ZFS replication for %s" % source_dataset)
+        snapshots.append((disk, initial_snap))
+
+        # Step 2: Incremental snapshot + send (via RPC on source node)
+        incremental_snap = ("ganeti-migration-%d-incremental"
+                            % int(time.time()))
+        self.feedback_fn("  - creating and sending incremental snapshot %s"
+                         % incremental_snap)
+
+        result = self.rpc.call_blockdev_zfs_replicate(
+            source_node, (disk, self.instance),
+            incremental_snap, target_node, initial_snap)
+        result.Raise("Failed incremental ZFS replication for %s"
+                     % source_dataset)
+        snapshots.append((disk, incremental_snap))
+
       self.feedback_fn("* ZFS replication preparation complete")
-      
-      # Store snapshot info for final sync during instance pause
       self.zfs_snapshots = snapshots
-      
-    except Exception as err:
-      # Cleanup snapshots on error
+
+    except Exception:
+      # Cleanup snapshots on source node on error
       self.feedback_fn("* cleaning up ZFS snapshots due to error")
-      for dataset, snap in snapshots:
-        utils.RunCmd(["zfs", "destroy", "%s@%s" % (dataset, snap)])
+      self._CleanupZfsSnapshots(snapshots)
       raise
 
   def _ZfsFinalSync(self):
     """Perform final ZFS synchronization during instance pause.
-    
+
     This is called when the instance is paused to do the final
-    incremental sync with minimal downtime.
+    incremental sync with minimal downtime. All commands run on the
+    source node via RPC.
     """
-    if not hasattr(self, 'zfs_snapshots'):
+    if not hasattr(self, 'zfs_snapshots') or not self.zfs_snapshots:
       return
-      
+
     self.feedback_fn("* performing final ZFS synchronization")
-    target_ip = self.nodes_ip[self.target_node_uuid]
-    
-    for dataset, intermediate_snap in self.zfs_snapshots:
-      # Take final snapshot
-      import time
+    source_node = self.source_node_uuid
+    target_node = self.cfg.GetNodeName(self.target_node_uuid)
+    final_snapshots = []
+
+    for disk, intermediate_snap in self.zfs_snapshots:
+      pool_name, dataset_name = disk.logical_id
+      source_dataset = "%s/%s" % (pool_name, dataset_name)
+
       final_snap = "ganeti-migration-%d-final" % int(time.time())
-      
-      result = utils.RunCmd(["zfs", "snapshot", "%s@%s" % (dataset, final_snap)])
-      if result.failed:
-        logging.error("Failed to create final ZFS snapshot: %s", result.stderr)
-        continue
-        
-      # Send final incremental
-      # Send final incremental changes via pipeline
-      pipeline_cmd = "zfs send -i %s@%s %s@%s | ssh %s 'zfs receive %s'" % (
-          dataset, intermediate_snap, dataset, final_snap, target_ip, dataset)
-      result = utils.RunCmd(pipeline_cmd)
-      
-      if result.failed:
-        logging.error("Failed final ZFS sync for %s: %s", dataset, result.stderr)
-        
-      # Cleanup old snapshots, keep final one
-      utils.RunCmd(["zfs", "destroy", "%s@%s" % (dataset, intermediate_snap)])
+      self.feedback_fn("  - final sync for %s" % source_dataset)
+
+      result = self.rpc.call_blockdev_zfs_replicate(
+          source_node, (disk, self.instance),
+          final_snap, target_node, intermediate_snap)
+      if result.fail_msg:
+        logging.error("Failed final ZFS sync for %s: %s",
+                      source_dataset, result.fail_msg)
+      else:
+        final_snapshots.append((disk, final_snap))
+
+      # Cleanup intermediate snapshot on source
+      self.rpc.call_blockdev_zfs_cleanup_snapshots(
+          source_node, (disk, self.instance), [intermediate_snap])
+
+    # Track final snapshots so they get cleaned up in post-migration
+    self.zfs_snapshots.extend(final_snapshots)
+
+  def _CleanupZfsSnapshots(self, snapshots, node_uuid=None):
+    """Clean up ZFS migration snapshots on a given node.
+
+    @type snapshots: list of (L{objects.Disk}, string)
+    @param snapshots: list of (disk, snapshot_name) tuples to clean up
+    @type node_uuid: string or None
+    @param node_uuid: node to clean up on; defaults to source_node_uuid
+
+    """
+    if not snapshots:
+      return
+    if node_uuid is None:
+      node_uuid = self.source_node_uuid
+    # Group by disk to minimize RPC calls
+    disk_snaps = {}
+    for disk, snap_name in snapshots:
+      disk_snaps.setdefault(disk.uuid, (disk, []))[1].append(snap_name)
+
+    for _, (disk, snap_names) in disk_snaps.items():
+      result = self.rpc.call_blockdev_zfs_cleanup_snapshots(
+          node_uuid, (disk, self.instance), snap_names)
+      if result.fail_msg:
+        logging.warning("Failed to cleanup ZFS snapshots: %s",
+                        result.fail_msg)
 
   def _ExecCleanup(self):
     """Try to cleanup after a failed migration.
@@ -1185,19 +1186,12 @@ class TLMigrateInstance(Tasklet):
                        (utils.CommaJoin(d.name for d in remove_disks),
                         self.cfg.GetNodeName(self.source_node_uuid)))
       
-      # Clean up migration snapshots first (if any exist)
-      if hasattr(self, 'zfs_snapshots'):
-        self.feedback_fn("* cleaning up ZFS migration snapshots on source")
-        for dataset, _ in self.zfs_snapshots:
-          # List and destroy any remaining migration snapshots
-          result = utils.RunCmd(["zfs", "list", "-t", "snapshot", "-H", "-o", "name", dataset])
-          if not result.failed:
-            for line in result.stdout.strip().split('\n'):
-              if line and 'ganeti-migration-' in line:
-                snap_result = utils.RunCmd(["zfs", "destroy", line])
-                if snap_result.failed:
-                  logging.error("Failed to cleanup migration snapshot %s: %s", 
-                                line, snap_result.stderr)
+      # Clean up migration snapshots on both source and target
+      if hasattr(self, 'zfs_snapshots') and self.zfs_snapshots:
+        self.feedback_fn("* cleaning up ZFS migration snapshots")
+        self._CleanupZfsSnapshots(self.zfs_snapshots)
+        self._CleanupZfsSnapshots(self.zfs_snapshots,
+                                  node_uuid=self.target_node_uuid)
       
       # Remove the source zvols
       for disk in processed_disks:
