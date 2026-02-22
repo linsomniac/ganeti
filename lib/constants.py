@@ -142,7 +142,7 @@ DISK_DT_DEFAULTS = {
     DT_EXT: {},
     DT_GLUSTER: {},
     DT_ZFS: {
-        "pool": "pool",  # Default ZFS pool name
+        "pool": "tank",  # Default ZFS pool name (matches Haskell defaultZfsPool)
     },
 }
 
