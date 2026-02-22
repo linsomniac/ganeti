@@ -2408,6 +2408,9 @@ rbdAccess = "access"
 rbdPool :: String
 rbdPool = "pool"
 
+zfsPool :: String
+zfsPool = "pool"
+
 rbdUserId :: String
 rbdUserId = "user-id"
 
@@ -4251,6 +4254,9 @@ defaultPlanAhead = 20
 
 defaultRbdPool :: String
 defaultRbdPool = "rbd"
+
+defaultZfsPool :: String
+defaultZfsPool = "tank"
 
 defaultRbdUserId :: String
 defaultRbdUserId = ""
