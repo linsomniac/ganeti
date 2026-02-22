@@ -4535,6 +4535,96 @@ def BlockdevSnapshot(disk, snap_name, snap_size):
           disk.logical_id, disk.dev_type)
 
 
+def BlockdevZfsReplicate(disk, snap_name, target_node, incremental_base):
+  """Create a ZFS snapshot and send it to a remote node.
+
+  This runs on the source node where the ZFS dataset lives. It creates
+  a snapshot and sends it to the target via zfs send piped through ssh
+  to zfs receive on the remote node.
+
+  @type disk: L{objects.Disk}
+  @param disk: the source disk object
+  @type snap_name: string
+  @param snap_name: snapshot name to create and send
+  @type target_node: string
+  @param target_node: hostname of the target node
+  @type incremental_base: string or None
+  @param incremental_base: base snapshot for incremental send, or None
+  @rtype: string
+  @return: the snapshot name on success
+
+  """
+  # AIDEV-NOTE: This RPC runs on the SOURCE node to fix the bug where ZFS
+  # migration commands were running on the master node instead of the source.
+  # Uses set -o pipefail so zfs send failures propagate through the pipeline.
+  # SSH uses SshRunner.BuildCmd() with the ganeti cluster SSH keys, matching
+  # how other inter-node operations (e.g. disk dd during gnt-instance move)
+  # construct their SSH commands.
+  r_dev = _RecursiveFindBD(disk)
+  if r_dev is None:
+    _Fail("Cannot find block device %s", disk)
+
+  pool_name, dataset_name = disk.logical_id
+  dataset = "%s/%s" % (pool_name, dataset_name)
+
+  # Create snapshot
+  result = utils.RunCmd(["zfs", "snapshot", "%s@%s" % (dataset, snap_name)])
+  if result.failed:
+    _Fail("Failed to create ZFS snapshot %s@%s: %s",
+          dataset, snap_name, result.output)
+
+  # Build SSH command using ganeti's SshRunner for proper cluster SSH keys
+  cluster_name = _GetConfig().GetClusterName()
+  srun = _GetSshRunner(cluster_name)
+  receive_cmd = utils.ShellQuoteArgs(
+      ["zfs", "receive", "-F", dataset])
+  ssh_cmd = srun.BuildCmd(target_node, constants.SSH_LOGIN_USER,
+                          receive_cmd, batch=True,
+                          strict_host_check=True, quiet=False)
+  ssh_part = utils.ShellQuoteArgs(ssh_cmd)
+
+  # Build and execute send/receive pipeline
+  # AIDEV-NOTE: Must use /bin/bash explicitly because Debian's /bin/sh is dash,
+  # which doesn't support "set -o pipefail".
+  if incremental_base:
+    pipeline = ("set -o pipefail; zfs send -i '%s@%s' '%s@%s' | %s" %
+                (dataset, incremental_base, dataset, snap_name, ssh_part))
+  else:
+    pipeline = ("set -o pipefail; zfs send '%s@%s' | %s" %
+                (dataset, snap_name, ssh_part))
+
+  send_cmd = ["/bin/bash", "-c", pipeline]
+  logging.info("ZFS replication: %s", pipeline)
+  result = utils.RunCmd(send_cmd)
+  if result.failed:
+    # Try to clean up the snapshot we just created
+    utils.RunCmd(["zfs", "destroy", "%s@%s" % (dataset, snap_name)])
+    _Fail("Failed ZFS send/receive for %s@%s: %s",
+          dataset, snap_name, result.output)
+
+  return snap_name
+
+
+def BlockdevZfsCleanupSnapshots(disk, snap_names):
+  """Destroy ZFS migration snapshots on a disk.
+
+  @type disk: L{objects.Disk}
+  @param disk: disk to clean snapshots from
+  @type snap_names: list of string
+  @param snap_names: list of snapshot names to destroy
+
+  """
+  pool_name, dataset_name = disk.logical_id
+  dataset = "%s/%s" % (pool_name, dataset_name)
+
+  for snap_name in snap_names:
+    result = utils.RunCmd(["zfs", "destroy",
+                           "%s@%s" % (dataset, snap_name)])
+    if result.failed:
+      logging.warning("Failed to destroy ZFS snapshot %s@%s: %s",
+                      dataset, snap_name, result.output)
+
+
 def BlockdevSetInfo(disk, info):
   """Sets 'metadata' information on block devices.
 
