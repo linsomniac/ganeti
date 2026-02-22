@@ -481,6 +481,17 @@ _BLOCKDEV_CALLS = [
     ("disk", ED_SINGLE_DISK_DICT_DP, None),
     ("info", None, None),
     ], None, None, "Sets metadata information on a given block device"),
+  ("blockdev_zfs_replicate", SINGLE, None, constants.RPC_TMO_SLOW, [
+    ("disk", ED_SINGLE_DISK_DICT_DP, "Source disk object"),
+    ("snap_name", None, "Snapshot name to create and send"),
+    ("target_node", None, "Target node hostname"),
+    ("incremental_base", None, "Base snapshot for incremental send, or None"),
+    ], None, None,
+    "Create a ZFS snapshot and send it to a remote node"),
+  ("blockdev_zfs_cleanup_snapshots", SINGLE, None, constants.RPC_TMO_NORMAL, [
+    ("disk", ED_SINGLE_DISK_DICT_DP, "Disk to clean snapshots from"),
+    ("snap_names", None, "List of snapshot names to destroy"),
+    ], None, None, "Destroy ZFS migration snapshots on a disk"),
   ]
 
 _OS_CALLS = [
