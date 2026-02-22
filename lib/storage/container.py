@@ -525,9 +525,9 @@ class ZfsPoolStorage(_Base):
         used_bytes = int(used_str)
         available_bytes = int(available_str)
         
-        # Convert bytes to MiB (1 MiB = 1024 * 1024 bytes)
-        used_mib = used_bytes // (1024 * 1024)
-        available_mib = available_bytes // (1024 * 1024)
+        _MIB = 1024 * 1024
+        used_mib = used_bytes // _MIB
+        available_mib = available_bytes // _MIB
       except ValueError as e:
         logging.warning("Cannot parse ZFS sizes for %s: %s, %s: %s", 
                         name, used_str, available_str, e)

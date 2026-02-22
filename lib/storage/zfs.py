@@ -1,10 +1,21 @@
 """ZFS-specific storage backend implementation."""
 
-import logging
 import os
+import re
+import time
 
 from ganeti import errors, utils
 from ganeti.storage import base
+
+# AIDEV-NOTE: ZFS name validation regex - allows only safe characters.
+# Must reject shell metacharacters since names end up in shell pipelines
+# (backend.BlockdevZfsReplicate). Also rejects '@' (ZFS snapshot separator)
+# and '#' (ZFS bookmark separator).
+_VALID_ZFS_NAME_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+_ZFS_ATTACH_MAX_WAIT = 30       # seconds to wait for zvol device to appear
+_ZFS_ATTACH_POLL_INTERVAL = 0.5  # seconds between device existence checks
+_MIB_TO_BYTES = 1024 * 1024
 
 
 class ZfsBlockDevice(base.BlockDev):
@@ -37,21 +48,26 @@ class ZfsBlockDevice(base.BlockDev):
             )
 
         self.pool_name, self.dataset_name = unique_id
+        self.full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
         # ZFS datasets appear as /dev/zvol/<pool>/<dataset>
         self.dev_path = "/dev/zvol/%s/%s" % (self.pool_name, self.dataset_name)
-        
+
         # Try to attach to existing device (similar to RADOS)
         self.Attach()
 
     @staticmethod
     def _ValidateName(name):
-        """Validate ZFS pool or dataset name.
+        """Validate a ZFS pool or dataset name component.
+
+        Rejects empty names, names starting with '-', and names containing
+        shell metacharacters, '@' (snapshot separator), '#' (bookmark
+        separator), or '/'. Only allows alphanumerics, '.', '_', ':', '-'.
 
         @type name: str
         @param name: name to validate
         @raises errors.ProgrammerError: if name is invalid
         """
-        if not name or "/" in name or name.startswith("-"):
+        if not name or name.startswith("-") or not _VALID_ZFS_NAME_RE.match(name):
             raise errors.ProgrammerError("Invalid ZFS name '%s'" % name)
 
     @classmethod
@@ -92,13 +108,16 @@ class ZfsBlockDevice(base.BlockDev):
             base.ThrowError("ZFS pool '%s' does not exist", pool_name)
 
         # Create the ZFS dataset as a volume
-        size_bytes = int(size * 1024 * 1024)  # Convert MiB to bytes
-        cmd = ["zfs", "create", "-V", str(size_bytes), full_dataset]
+        # AIDEV-NOTE: ZFS requires -o options BEFORE the dataset name
+        size_bytes = int(size * _MIB_TO_BYTES)
+        cmd = ["zfs", "create", "-V", str(size_bytes)]
 
-        # Add any ZFS-specific parameters
+        # Add any ZFS-specific properties (before dataset name)
         zfs_props = params.get("zfs_properties", {})
         for prop, value in zfs_props.items():
             cmd.extend(["-o", "%s=%s" % (prop, value)])
+
+        cmd.append(full_dataset)
 
         result = utils.RunCmd(cmd)
         if result.failed:
@@ -113,39 +132,37 @@ class ZfsBlockDevice(base.BlockDev):
         if not self.minor and not self.Attach():
             base.ThrowError("Can't attach to ZFS dataset during removal")
 
-        full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
-
         # First try to unmount if mounted
-        result = utils.RunCmd(["zfs", "unmount", full_dataset])
+        utils.RunCmd(["zfs", "unmount", self.full_dataset])
         # Ignore errors - dataset might not be mounted
 
-        # Destroy the dataset
-        result = utils.RunCmd(["zfs", "destroy", "-r", full_dataset])
+        # Try non-recursive destroy first; fall back to -r if children exist
+        result = utils.RunCmd(["zfs", "destroy", self.full_dataset])
         if result.failed:
-            base.ThrowError(
-                "Can't remove ZFS dataset '%s': %s", full_dataset, result.stderr
-            )
+            # AIDEV-NOTE: -r recursively destroys child datasets/snapshots.
+            # We only use it as a fallback to avoid unexpectedly destroying
+            # children that may have been created by other processes.
+            result = utils.RunCmd(["zfs", "destroy", "-r", self.full_dataset])
+            if result.failed:
+                base.ThrowError(
+                    "Can't remove ZFS dataset '%s': %s",
+                    self.full_dataset, result.stderr
+                )
 
     def Attach(self, **kwargs):
         """Attach to an existing ZFS dataset."""
-        import time
-        
         # Reset attached state at the beginning (like RBD does)
         self.attached = False
-        
-        full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
 
         # Check if dataset exists
-        result = utils.RunCmd(["zfs", "list", "-H", "-o", "name", full_dataset])
+        result = utils.RunCmd(["zfs", "list", "-H", "-o", "name",
+                               self.full_dataset])
         if result.failed:
             return False
 
         # Wait for device to become available (ZFS zvol creation can be delayed)
-        max_wait = 30  # Wait up to 30 seconds
-        wait_interval = 0.5  # Check every 0.5 seconds
         waited = 0
-        
-        while waited < max_wait:
+        while waited < _ZFS_ATTACH_MAX_WAIT:
             if os.path.exists(self.dev_path):
                 try:
                     stat_info = os.stat(self.dev_path)
@@ -153,12 +170,11 @@ class ZfsBlockDevice(base.BlockDev):
                     self.minor = os.minor(stat_info.st_rdev)
                     self.attached = True
                     return True
-                except (OSError, IOError):
-                    # Device exists but not ready, continue waiting
-                    pass
-            
-            time.sleep(wait_interval)
-            waited += wait_interval
+                except OSError:
+                    pass  # Device exists but not ready, continue waiting
+
+            time.sleep(_ZFS_ATTACH_POLL_INTERVAL)
+            waited += _ZFS_ATTACH_POLL_INTERVAL
 
         return False
 
@@ -167,21 +183,20 @@ class ZfsBlockDevice(base.BlockDev):
 
         For ZFS, this ensures the dataset is available and the device exists.
         """
-        full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
-
         # Import the pool if needed
-        result = utils.RunCmd(["zpool", "list", "-H", "-o", "name", self.pool_name])
+        result = utils.RunCmd(["zpool", "list", "-H", "-o", "name",
+                               self.pool_name])
         if result.failed:
-            # Try to import the pool
             result = utils.RunCmd(["zpool", "import", self.pool_name])
             if result.failed:
                 base.ThrowError(
-                    "Cannot import ZFS pool '%s': %s", self.pool_name, result.stderr
+                    "Cannot import ZFS pool '%s': %s",
+                    self.pool_name, result.stderr
                 )
 
-        # Make sure the dataset is available
         if not self.Attach():
-            base.ThrowError("Cannot attach to ZFS dataset '%s'", full_dataset)
+            base.ThrowError("Cannot attach to ZFS dataset '%s'",
+                            self.full_dataset)
 
     def Shutdown(self):
         """Shutdown the ZFS dataset.
@@ -215,8 +230,7 @@ class ZfsBlockDevice(base.BlockDev):
         if not self.Attach():
             base.ThrowError("Cannot attach to ZFS dataset during grow")
 
-        full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
-        new_size_bytes = int((self.size + amount) * 1024 * 1024)
+        new_size_bytes = int((self.size + amount) * _MIB_TO_BYTES)
 
         if dryrun:
             # For dry-run, just return success
@@ -224,11 +238,12 @@ class ZfsBlockDevice(base.BlockDev):
 
         # Resize the ZFS volume
         result = utils.RunCmd(
-            ["zfs", "set", "volsize=%d" % new_size_bytes, full_dataset]
+            ["zfs", "set", "volsize=%d" % new_size_bytes, self.full_dataset]
         )
         if result.failed:
             base.ThrowError(
-                "Cannot grow ZFS dataset '%s': %s", full_dataset, result.stderr
+                "Cannot grow ZFS dataset '%s': %s",
+                self.full_dataset, result.stderr
             )
 
         self.size += amount
@@ -243,13 +258,13 @@ class ZfsBlockDevice(base.BlockDev):
         @rtype: tuple
         @return: tuple with the snapshot's logical id
         """
-        full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
-        snap_dataset = "%s@%s" % (full_dataset, snap_name)
+        snap_dataset = "%s@%s" % (self.full_dataset, snap_name)
 
         result = utils.RunCmd(["zfs", "snapshot", snap_dataset])
         if result.failed:
             base.ThrowError(
-                "Cannot create ZFS snapshot '%s': %s", snap_dataset, result.stderr
+                "Cannot create ZFS snapshot '%s': %s",
+                snap_dataset, result.stderr
             )
 
         # Return the snapshot's logical id - for ZFS this is (pool, dataset@snapshot)
@@ -264,8 +279,7 @@ class ZfsBlockDevice(base.BlockDev):
         if not self.Attach():
             base.ThrowError("Cannot attach to ZFS dataset during export")
 
-        full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
-        return ["zfs", "send", full_dataset]
+        return ["zfs", "send", self.full_dataset]
 
     def Import(self):
         """Build ZFS receive command for importing data.
@@ -273,8 +287,7 @@ class ZfsBlockDevice(base.BlockDev):
         @rtype: list of strings
         @return: command to import data to the dataset
         """
-        full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
-        return ["zfs", "receive", "-F", full_dataset]
+        return ["zfs", "receive", "-F", self.full_dataset]
 
     def GetUserspaceAccessUri(self, hypervisor):
         """Return URIs hypervisors can use to access disks in userspace.
@@ -286,109 +299,6 @@ class ZfsBlockDevice(base.BlockDev):
         """
         return self.dev_path
 
-    @staticmethod
-    def GetZfsInfo():
-        """Get information about all ZFS datasets.
-
-        @rtype: dict
-        @return: dict with dataset info
-        """
-        result = utils.RunCmd(
-            ["zfs", "list", "-H", "-o", "name,type,used,avail,mountpoint"]
-        )
-        if result.failed:
-            logging.warning("zfs list command failed")
-            return {}
-
-        info = {}
-        for line in result.stdout.splitlines():
-            if not line.strip():
-                continue
-            parts = line.strip().split("\t")
-            if len(parts) >= 5 and parts[1] == "volume":
-                dataset_name = parts[0]
-                info[dataset_name] = {
-                    "used": parts[2],
-                    "avail": parts[3],
-                }
-
-        return info
-
-    def SendSnapshot(
-        self, snapshot_name, target_host, target_dataset, incremental_base=None
-    ):
-        """Send a ZFS snapshot to another host.
-
-        @type snapshot_name: string
-        @param snapshot_name: name of snapshot to send
-        @type target_host: string
-        @param target_host: destination host
-        @type target_dataset: string
-        @param target_dataset: destination dataset name
-        @type incremental_base: string
-        @param incremental_base: base snapshot for incremental send
-        @rtype: boolean
-        @return: True if successful
-        """
-        full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
-        snap_dataset = "%s@%s" % (full_dataset, snapshot_name)
-
-        # Build the ZFS send command
-        send_cmd = ["zfs", "send"]
-        if incremental_base:
-            base_snap = "%s@%s" % (full_dataset, incremental_base)
-            send_cmd.extend(["-i", base_snap])
-        send_cmd.append(snap_dataset)
-
-        # Build the receive command on target
-        receive_cmd = ["ssh", target_host, "zfs", "receive", "-F", target_dataset]
-
-        # Execute the pipeline: zfs send | ssh target zfs receive
-        send_result = utils.RunCmd(send_cmd, output=utils.CAPTURE)
-        if send_result.failed:
-            base.ThrowError("ZFS send failed: %s", send_result.stderr)
-
-        receive_result = utils.RunCmd(receive_cmd, input_data=send_result.stdout)
-        if receive_result.failed:
-            base.ThrowError("ZFS receive failed: %s", receive_result.stderr)
-
-        return True
-
-    def GetLastSnapshot(self):
-        """Get the most recent snapshot of this dataset.
-
-        @rtype: string or None
-        @return: snapshot name or None if no snapshots exist
-        """
-        full_dataset = "%s/%s" % (self.pool_name, self.dataset_name)
-
-        result = utils.RunCmd(
-            [
-                "zfs",
-                "list",
-                "-t",
-                "snapshot",
-                "-H",
-                "-o",
-                "name",
-                "-s",
-                "creation",
-                "-d",
-                "1",
-                full_dataset,
-            ]
-        )
-        if result.failed:
-            return None
-
-        snapshots = result.stdout.strip().split("\n")
-        if not snapshots or not snapshots[0]:
-            return None
-
-        # Get the last (most recent) snapshot
-        last_snap = snapshots[-1]
-        # Extract just the snapshot name part after the @
-        if "@" in last_snap:
-            return last_snap.split("@")[1]
-
-        return None
+    def Rename(self, new_id):
+        """Rename is not supported for ZFS block devices."""
+        pass
