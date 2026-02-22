@@ -10,6 +10,10 @@ Ganeti is a virtual machine cluster management tool built on top of existing vir
 - **Haskell** (src/): High-performance tools (htools), job scheduling, monitoring daemons, metadata daemon
 - **Tests**: Comprehensive test suite in both languages
 
+## Testing
+
+To run testing, see the file "TESTING.md".
+
 ## Build System
 
 This project uses GNU autotools (autoconf/automake) with additional Haskell cabal integration:
