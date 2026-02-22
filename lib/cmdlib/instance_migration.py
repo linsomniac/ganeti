@@ -32,6 +32,7 @@
 
 import logging
 import time
+import uuid
 
 from ganeti import constants
 from ganeti import errors
@@ -306,6 +307,7 @@ class TLMigrateInstance(Tasklet):
     self.ignore_ipolicy = ignore_ipolicy
     self.allow_runtime_changes = allow_runtime_changes
     self.ignore_hvversions = ignore_hvversions
+    self.zfs_snapshots = []
 
   def CheckPrereq(self):
     """Check prerequisites.
@@ -669,7 +671,11 @@ class TLMigrateInstance(Tasklet):
         self.feedback_fn("* replicating ZFS dataset %s" % source_dataset)
 
         # Step 1: Initial snapshot + send (via RPC on source node)
-        initial_snap = "ganeti-migration-%d-initial" % int(time.time())
+        # AIDEV-NOTE: UUID suffix prevents snapshot name collisions if
+        # multiple migrations happen within the same second.
+        migration_id = uuid.uuid4().hex[:8]
+        initial_snap = "ganeti-migration-%d-%s-initial" % (
+            int(time.time()), migration_id)
         self.feedback_fn("  - creating and sending initial snapshot %s"
                          % initial_snap)
 
@@ -680,8 +686,8 @@ class TLMigrateInstance(Tasklet):
         snapshots.append((disk, initial_snap))
 
         # Step 2: Incremental snapshot + send (via RPC on source node)
-        incremental_snap = ("ganeti-migration-%d-incremental"
-                            % int(time.time()))
+        incremental_snap = ("ganeti-migration-%d-%s-incremental"
+                            % (int(time.time()), migration_id))
         self.feedback_fn("  - creating and sending incremental snapshot %s"
                          % incremental_snap)
 
@@ -708,7 +714,7 @@ class TLMigrateInstance(Tasklet):
     incremental sync with minimal downtime. All commands run on the
     source node via RPC.
     """
-    if not hasattr(self, 'zfs_snapshots') or not self.zfs_snapshots:
+    if not self.zfs_snapshots:
       return
 
     self.feedback_fn("* performing final ZFS synchronization")
@@ -716,25 +722,33 @@ class TLMigrateInstance(Tasklet):
     target_node = self.cfg.GetNodeName(self.target_node_uuid)
     final_snapshots = []
 
-    for disk, intermediate_snap in self.zfs_snapshots:
+    # AIDEV-NOTE: self.zfs_snapshots contains BOTH initial and incremental
+    # entries per disk. We must only use the LAST (most recent) snapshot per
+    # disk as the incremental base for the final sync, otherwise ZFS will
+    # reject the incremental stream (target's most recent snapshot won't match).
+    last_snap_per_disk = {}
+    for disk, snap_name in self.zfs_snapshots:
+      last_snap_per_disk[disk.uuid] = (disk, snap_name)
+
+    for disk, intermediate_snap in last_snap_per_disk.values():
       pool_name, dataset_name = disk.logical_id
       source_dataset = "%s/%s" % (pool_name, dataset_name)
 
-      final_snap = "ganeti-migration-%d-final" % int(time.time())
+      final_id = uuid.uuid4().hex[:8]
+      final_snap = "ganeti-migration-%d-%s-final" % (
+          int(time.time()), final_id)
       self.feedback_fn("  - final sync for %s" % source_dataset)
 
       result = self.rpc.call_blockdev_zfs_replicate(
           source_node, (disk, self.instance),
           final_snap, target_node, intermediate_snap)
+      # AIDEV-NOTE: Final sync failure is critical - the target disk would
+      # be missing the last writes. We must raise to abort the migration.
       if result.fail_msg:
-        logging.error("Failed final ZFS sync for %s: %s",
-                      source_dataset, result.fail_msg)
-      else:
-        final_snapshots.append((disk, final_snap))
-
-      # Cleanup intermediate snapshot on source
-      self.rpc.call_blockdev_zfs_cleanup_snapshots(
-          source_node, (disk, self.instance), [intermediate_snap])
+        raise errors.OpExecError(
+            "Failed final ZFS sync for %s: %s" %
+            (source_dataset, result.fail_msg))
+      final_snapshots.append((disk, final_snap))
 
     # Track final snapshots so they get cleaned up in post-migration
     self.zfs_snapshots.extend(final_snapshots)
@@ -1187,7 +1201,7 @@ class TLMigrateInstance(Tasklet):
                         self.cfg.GetNodeName(self.source_node_uuid)))
       
       # Clean up migration snapshots on both source and target
-      if hasattr(self, 'zfs_snapshots') and self.zfs_snapshots:
+      if self.zfs_snapshots:
         self.feedback_fn("* cleaning up ZFS migration snapshots")
         self._CleanupZfsSnapshots(self.zfs_snapshots)
         self._CleanupZfsSnapshots(self.zfs_snapshots,

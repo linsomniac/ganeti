@@ -4586,12 +4586,16 @@ def BlockdevZfsReplicate(disk, snap_name, target_node, incremental_base):
   # Build and execute send/receive pipeline
   # AIDEV-NOTE: Must use /bin/bash explicitly because Debian's /bin/sh is dash,
   # which doesn't support "set -o pipefail".
+  # AIDEV-NOTE: Must use ShellQuote for all interpolated values to prevent
+  # shell injection via dataset names containing shell metacharacters.
+  q_dataset_snap = utils.ShellQuote("%s@%s" % (dataset, snap_name))
   if incremental_base:
-    pipeline = ("set -o pipefail; zfs send -i '%s@%s' '%s@%s' | %s" %
-                (dataset, incremental_base, dataset, snap_name, ssh_part))
+    q_dataset_base = utils.ShellQuote("%s@%s" % (dataset, incremental_base))
+    pipeline = ("set -o pipefail; zfs send -i %s %s | %s" %
+                (q_dataset_base, q_dataset_snap, ssh_part))
   else:
-    pipeline = ("set -o pipefail; zfs send '%s@%s' | %s" %
-                (dataset, snap_name, ssh_part))
+    pipeline = ("set -o pipefail; zfs send %s | %s" %
+                (q_dataset_snap, ssh_part))
 
   send_cmd = ["/bin/bash", "-c", pipeline]
   logging.info("ZFS replication: %s", pipeline)

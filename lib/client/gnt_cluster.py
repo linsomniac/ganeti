@@ -155,7 +155,7 @@ def _InitZfsPool(opts, enabled_disk_templates):
       raise errors.OpPrereqError(
           "ZFS disk template is enabled, but ZFS pool name not set.")
   elif utils.IsZfsEnabled(enabled_disk_templates):
-    zfs_pool = "pool"  # Default ZFS pool name
+    zfs_pool = "tank"  # Default ZFS pool name
   return zfs_pool
 
 
