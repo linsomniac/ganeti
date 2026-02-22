@@ -1,4 +1,8 @@
-# Ganeti 3.1
+# Ganeti 3.1 - ZFS Fork
+
+This is a fork of Ganeti that adds a first-class ZFS storage backend with support for live migration via ZFS snapshot replication. See [README-ZFS.md](README-ZFS.md) for details.
+
+---
 
 **Welcome to the Ganeti Project**
 
