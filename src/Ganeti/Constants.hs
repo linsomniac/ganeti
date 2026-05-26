@@ -1839,6 +1839,9 @@ hvVhostNet = "vhost_net"
 hvVirtioNetQueues :: String
 hvVirtioNetQueues = "virtio_net_queues"
 
+maxVirtioNetQueues :: Int
+maxVirtioNetQueues = 32
+
 hvVifScript :: String
 hvVifScript = "vif_script"
 
@@ -2514,6 +2517,14 @@ oobStatuses = ConstantUtils.mkSet $ map Types.oobStatusToRaw [minBound..]
 ppDefault :: String
 ppDefault = "default"
 
+-- * nicAction* constants are used as script names
+
+nicActionUp :: String
+nicActionUp = "up"
+
+nicActionDown :: String
+nicActionDown = "down"
+
 -- * nic* constants are used inside the ganeti config
 
 nicLink :: String
@@ -2545,6 +2556,9 @@ nicModeOvs = Types.nICModeToRaw NMOvs
 
 nicIpPool :: String
 nicIpPool = Types.nICModeToRaw NMPool
+
+nicModeExt :: String
+nicModeExt = Types.nICModeToRaw NMExt
 
 nicValidModes :: FrozenSet String
 nicValidModes = ConstantUtils.mkSet $ map Types.nICModeToRaw [minBound..]
@@ -2821,11 +2835,15 @@ htScsiControllerVirtio = "virtio-scsi-pci"
 htScsiControllerMegasas :: String
 htScsiControllerMegasas = "megasas"
 
+htScsiControllerTekram :: String
+htScsiControllerTekram = "dc390"
+
 htKvmValidScsiControllerTypes :: FrozenSet String
 htKvmValidScsiControllerTypes =
   ConstantUtils.mkSet [htScsiControllerLsi,
                        htScsiControllerVirtio,
-                       htScsiControllerMegasas]
+                       htScsiControllerMegasas,
+                       htScsiControllerTekram]
 
 htCacheDefault :: String
 htCacheDefault = "default"
