@@ -2417,9 +2417,6 @@ zfsPool = "pool"
 rbdUserId :: String
 rbdUserId = "user-id"
 
-zfsPool :: String
-zfsPool = "pool"
-
 diskDtTypes :: Map String VType
 diskDtTypes =
   Map.fromList [(drbdResyncRate, VTypeInt),
@@ -4278,9 +4275,6 @@ defaultZfsPool = "tank"
 
 defaultRbdUserId :: String
 defaultRbdUserId = ""
-
-defaultZfsPool :: String
-defaultZfsPool = "tank"
 
 diskLdDefaults :: Map DiskTemplate (Map String PyValueEx)
 diskLdDefaults =
