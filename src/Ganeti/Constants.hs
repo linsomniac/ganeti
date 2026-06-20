@@ -2319,6 +2319,9 @@ ldpPool = "pool"
 ldpUserId :: String
 ldpUserId = "user-id"
 
+ldpNamespace :: String
+ldpNamespace = "namespace"
+
 ldpProtocol :: String
 ldpProtocol = "protocol"
 
@@ -2347,7 +2350,8 @@ diskLdTypes =
    (ldpMaxRate, VTypeInt),
    (ldpMinRate, VTypeInt),
    (ldpPool, VTypeString),
-   (ldpUserId, VTypeString)]
+   (ldpUserId, VTypeString),
+   (ldpNamespace, VTypeString)]
 
 diskLdParameters :: FrozenSet String
 diskLdParameters = ConstantUtils.mkSet (Map.keys diskLdTypes)
@@ -2417,6 +2421,9 @@ zfsPool = "pool"
 rbdUserId :: String
 rbdUserId = "user-id"
 
+rbdNamespace :: String
+rbdNamespace = "namespace"
+
 diskDtTypes :: Map String VType
 diskDtTypes =
   Map.fromList [(drbdResyncRate, VTypeInt),
@@ -2438,6 +2445,7 @@ diskDtTypes =
                 (rbdAccess, VTypeString),
                 (rbdPool, VTypeString),
                 (rbdUserId, VTypeString),
+                (rbdNamespace, VTypeString),
                 (glusterHost, VTypeString),
                 (glusterVolume, VTypeString),
                 (glusterPort, VTypeInt),
@@ -4276,6 +4284,9 @@ defaultZfsPool = "tank"
 defaultRbdUserId :: String
 defaultRbdUserId = ""
 
+defaultRbdNamespace :: String
+defaultRbdNamespace = ""
+
 diskLdDefaults :: Map DiskTemplate (Map String PyValueEx)
 diskLdDefaults =
   Map.fromList
@@ -4304,6 +4315,7 @@ diskLdDefaults =
             [ (ldpPool, PyValueEx defaultRbdPool)
             , (ldpAccess, PyValueEx diskKernelspace)
             , (ldpUserId, PyValueEx defaultRbdUserId)
+            , (ldpNamespace, PyValueEx defaultRbdNamespace)
             ])
   , (DTSharedFile, Map.empty)
   , (DTGluster, Map.fromList
@@ -4348,6 +4360,7 @@ diskDtDefaults =
                    [ (rbdPool, PyValueEx defaultRbdPool)
                    , (rbdAccess, PyValueEx diskKernelspace)
                    , (rbdUserId, PyValueEx defaultRbdUserId)
+                   , (rbdNamespace, PyValueEx defaultRbdNamespace)
                    ])
   , (DTSharedFile, Map.empty)
   , (DTGluster, Map.fromList
